@@ -1,0 +1,33 @@
+{
+  "name": "update-screenshots-action",
+  "version": "0.1.0",
+  "description": "GitHub Action that captures a webpage screenshot and updates a marked image block in the root README.",
+  "main": "dist/index.js",
+  "scripts": {
+    "clean": "rm -rf dist lib",
+    "build:types": "tsc -p tsconfig.json",
+    "build:bundle": "ncc build lib/src/main.js -o dist",
+    "build": "npm run clean && npm run build:types && npm run build:bundle",
+    "test": "npm run build:types && node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "github-action",
+    "screenshots",
+    "readme",
+    "playwright"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "playwright-core": "^1.54.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.8.3"
+  }
+}
