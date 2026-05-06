@@ -13,6 +13,8 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.validateUrl = validateUrl;
 exports.parseInteger = parseInteger;
 exports.parseWaitUntil = parseWaitUntil;
+exports.parseCaptureFormat = parseCaptureFormat;
+exports.validateAssetPathForFormat = validateAssetPathForFormat;
 exports.resolveWorkspacePath = resolveWorkspacePath;
 exports.toPosixPath = toPosixPath;
 exports.buildReadmeImageBlock = buildReadmeImageBlock;
@@ -48,6 +50,19 @@ function parseWaitUntil(value) {
         return value;
     }
     throw new Error(`wait_until must be one of load, domcontentloaded, networkidle, commit. Received: ${value}`);
+}
+function parseCaptureFormat(value) {
+    if (value === "image" || value === "gif") {
+        return value;
+    }
+    throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
+}
+function validateAssetPathForFormat(assetPath, captureFormat) {
+    const expectedExtension = captureFormat === "image" ? ".png" : ".gif";
+    const actualExtension = node_path_1.default.extname(assetPath).toLowerCase();
+    if (actualExtension !== expectedExtension) {
+        throw new Error(`capture_format ${captureFormat} requires a ${expectedExtension} output path. Received: ${assetPath}`);
+    }
 }
 function resolveWorkspacePath(workspace, repoRelativePath) {
     if (!repoRelativePath.trim()) {
@@ -186,10 +201,14 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
 const playwright_core_1 = __nccwpck_require__(657);
 const node_child_process_1 = __nccwpck_require__(1421);
+const promises_1 = __nccwpck_require__(1455);
 const node_util_1 = __nccwpck_require__(7975);
 const node_path_1 = __importDefault(__nccwpck_require__(6760));
+const gif_encoder_2_1 = __importDefault(__nccwpck_require__(9364));
+const pngjs_1 = __nccwpck_require__(359);
 const lib_1 = __nccwpck_require__(3486);
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
+const DEFAULT_GIF_FPS = 10;
 async function run() {
     try {
         const workspace = process.env.GITHUB_WORKSPACE;
@@ -197,14 +216,16 @@ async function run() {
             throw new Error("GITHUB_WORKSPACE is not set.");
         }
         const url = (0, lib_1.validateUrl)(core.getInput("url", { required: true })).toString();
-        const imagePath = core.getInput("image_path", { required: true });
+        const assetPath = core.getInput("image_path", { required: true });
         const readmePath = core.getInput("readme_path") || "README.md";
+        const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
         const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
         const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
         const waitUntil = (0, lib_1.parseWaitUntil)(core.getInput("wait_until") || "networkidle");
         const navigationRetries = (0, lib_1.parseInteger)("navigation_retries", core.getInput("navigation_retries") || "0");
         const navigationRetryDelayMs = (0, lib_1.parseInteger)("navigation_retry_delay_ms", core.getInput("navigation_retry_delay_ms") || "1000");
         const delayMs = (0, lib_1.parseInteger)("delay_ms", core.getInput("delay_ms") || "0");
+        const gifDurationMs = (0, lib_1.parseInteger)("gif_duration_ms", core.getInput("gif_duration_ms") || "1000");
         const browserPathInput = core.getInput("browser_path") || undefined;
         const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
         const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
@@ -212,33 +233,36 @@ async function run() {
         const targetBranchInput = core.getInput("target_branch").trim();
         const targetBranch = targetBranchInput || undefined;
         const token = core.getInput("token") || undefined;
-        const imageAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, imagePath);
+        (0, lib_1.validateAssetPathForFormat)(assetPath, captureFormat);
+        const assetAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, assetPath);
         const readmeAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, readmePath);
         const browserExecutable = await (0, lib_1.findBrowserExecutable)(browserPathInput);
-        await (0, lib_1.ensureParentDirectory)(imageAbsolutePath);
-        await captureScreenshot({
+        await (0, lib_1.ensureParentDirectory)(assetAbsolutePath);
+        await captureAsset({
             browserExecutable,
             url,
-            imageAbsolutePath,
+            assetAbsolutePath,
+            captureFormat,
             viewportWidth,
             viewportHeight,
             waitUntil,
             navigationRetries,
             navigationRetryDelayMs,
-            delayMs
+            delayMs,
+            gifDurationMs
         });
-        const readmeChanged = await (0, lib_1.updateReadme)(readmeAbsolutePath, imagePath);
-        const screenshotChanged = await hasTrackedChanges(workspace, [imagePath]);
-        const changed = readmeChanged || screenshotChanged;
-        core.setOutput("image_path", node_path_1.default.normalize(imagePath));
+        const readmeChanged = await (0, lib_1.updateReadme)(readmeAbsolutePath, assetPath);
+        const assetChanged = await hasTrackedChanges(workspace, [assetPath]);
+        const changed = readmeChanged || assetChanged;
+        core.setOutput("image_path", node_path_1.default.normalize(assetPath));
         if (!changed) {
-            core.info("README and screenshot are already up to date.");
+            core.info("README and captured asset are already up to date.");
             core.setOutput("changed", "false");
             core.setOutput("commit_sha", "");
             return;
         }
         await configureGit(workspace, gitUserName, gitUserEmail);
-        await stageFiles(workspace, [imagePath, readmePath]);
+        await stageFiles(workspace, [assetPath, readmePath]);
         const stagedDiff = await hasStagedChanges(workspace);
         if (!stagedDiff) {
             core.info("File rewrites produced no staged diff.");
@@ -254,7 +278,7 @@ async function run() {
         core.setFailed(error instanceof Error ? error.message : String(error));
     }
 }
-async function captureScreenshot(options) {
+async function captureAsset(options) {
     const browser = await playwright_core_1.chromium.launch({
         executablePath: options.browserExecutable,
         headless: true,
@@ -280,15 +304,34 @@ async function captureScreenshot(options) {
         if (options.delayMs > 0) {
             await page.waitForTimeout(options.delayMs);
         }
-        await page.screenshot({
-            path: options.imageAbsolutePath,
-            type: "png",
-            fullPage: false
-        });
+        if (options.captureFormat === "gif") {
+            await captureGif(page, options);
+            return;
+        }
+        await page.screenshot({ path: options.assetAbsolutePath, type: "png", fullPage: false });
     }
     finally {
         await browser.close();
     }
+}
+async function captureGif(page, options) {
+    const frameDelayMs = Math.max(1000 / DEFAULT_GIF_FPS, 20);
+    const frameCount = Math.max(1, Math.ceil(options.gifDurationMs / frameDelayMs));
+    const encoder = new gif_encoder_2_1.default(options.viewportWidth, options.viewportHeight, "neuquant", true, frameCount);
+    encoder.start();
+    encoder.setRepeat(0);
+    encoder.setDelay(frameDelayMs);
+    encoder.setQuality(10);
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        const screenshotBuffer = (await page.screenshot({ type: "png", fullPage: false }));
+        const png = pngjs_1.PNG.sync.read(screenshotBuffer);
+        encoder.addFrame(png.data);
+        if (frameIndex < frameCount - 1) {
+            await page.waitForTimeout(frameDelayMs);
+        }
+    }
+    encoder.finish();
+    await (0, promises_1.writeFile)(options.assetAbsolutePath, encoder.out.getData());
 }
 async function configureGit(workspace, name, email) {
     await execGit(workspace, ["config", "user.name", name]);
@@ -3557,6 +3600,1338 @@ function copyFile(srcFile, destFile, force) {
     });
 }
 //# sourceMappingURL=io.js.map
+
+/***/ }),
+
+/***/ 9364:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = __nccwpck_require__(239)
+
+
+/***/ }),
+
+/***/ 239:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const stream = __nccwpck_require__(2203)
+const EventEmitter = __nccwpck_require__(4434)
+const LZWEncoder = __nccwpck_require__(576)
+const NeuQuant = __nccwpck_require__(9770)
+const { OctreeQuant, Color } = __nccwpck_require__(9216)
+
+class ByteArray {
+  constructor() {
+    this.data = []
+  }
+
+  getData() {
+    return Buffer.from(this.data)
+  }
+
+  writeByte(val) {
+    this.data.push(val)
+  }
+
+  writeUTFBytes(str) {
+    for (var len = str.length, i = 0; i < len; i++) {
+      this.writeByte(str.charCodeAt(i))
+    }
+  }
+
+  writeBytes(array, offset, length) {
+    for (var len = length || array.length, i = offset || 0; i < len; i++) {
+      this.writeByte(array[i])
+    }
+  }
+}
+
+class GIFEncoder extends EventEmitter {
+  constructor(width, height, algorithm = 'neuquant', useOptimizer = false, totalFrames = 0) {
+    super()
+
+    this.width = ~~width
+    this.height = ~~height
+    this.algorithm = algorithm
+    this.useOptimizer = useOptimizer
+    this.totalFrames = totalFrames
+    this.frames = 1
+    this.threshold = 90
+    this.indexedPixels = null
+    this.palSizeNeu = 7
+    this.palSizeOct = 7
+    this.sample = 10
+    this.colorTab = null
+    this.reuseTab = null
+    this.colorDepth = null
+    this.usedEntry = new Array()
+    this.firstFrame = true
+    this.started = false
+    this.image = null
+    this.prevImage = null
+    this.dispose = -1
+    this.repeat = 0
+    this.delay = 0
+    this.transparent = null
+    this.transIndex = 0
+    this.readStreams = []
+    this.out = new ByteArray()
+  }
+
+  createReadStream(rs) {
+    if (!rs) {
+      rs = new stream.Readable()
+      rs._read = function() {}
+    }
+    this.readStreams.push(rs)
+    return rs
+  }
+
+  emitData() {
+    if (this.readStreams.length === 0) {
+      return
+    }
+    if (this.out.data.length) {
+      this.readStreams.forEach(rs => {
+        rs.push(Buffer.from(this.out.data))
+      })
+      this.out.data = []
+    }
+  }
+
+  start() {
+    this.out.writeUTFBytes('GIF89a')
+    this.started = true
+    this.emitData()
+  }
+
+  end() {
+    if (this.readStreams.length === null) {
+      return
+    }
+    this.emitData()
+    this.readStreams.forEach(rs => rs.push(null))
+    this.readStreams = []
+  }
+
+  addFrame(input) {
+    if (input && input.getImageData) {
+      this.image = input.getImageData(0, 0, this.width, this.height).data
+    } else {
+      this.image = input
+    }
+
+    this.analyzePixels()
+
+    if (this.firstFrame) {
+      this.writeLSD()
+      this.writePalette()
+      if (this.repeat >= 0) {
+        this.writeNetscapeExt()
+      }
+    }
+
+    this.writeGraphicCtrlExt()
+    this.writeImageDesc()
+    if (!this.firstFrame) {
+      this.writePalette()
+    }
+    this.writePixels()
+    this.firstFrame = false
+    this.emitData()
+
+    if (this.totalFrames) {
+      this.emit('progress', Math.floor((this.frames++ / this.totalFrames) * 100))
+    }
+  }
+
+  analyzePixels() {
+    const w = this.width
+    const h = this.height
+
+    var data = this.image
+
+    if (this.useOptimizer && this.prevImage) {
+      var delta = 0
+      for (var len = data.length, i = 0; i < len; i += 4) {
+        if (
+          data[i] !== this.prevImage[i] ||
+          data[i + 1] !== this.prevImage[i + 1] ||
+          data[i + 2] !== this.prevImage[i + 2]
+        ) {
+          delta++
+        }
+      }
+      const match = 100 - Math.ceil((delta / (data.length / 4)) * 100)
+      this.reuseTab = match >= this.threshold
+    }
+
+    this.prevImage = data
+
+    if (this.algorithm === 'neuquant') {
+      var count = 0
+      this.pixels = new Uint8Array(w * h * 3)
+
+      for (var i = 0; i < h; i++) {
+        for (var j = 0; j < w; j++) {
+          var b = i * w * 4 + j * 4
+          this.pixels[count++] = data[b]
+          this.pixels[count++] = data[b + 1]
+          this.pixels[count++] = data[b + 2]
+        }
+      }
+
+      var nPix = this.pixels.length / 3
+      this.indexedPixels = new Uint8Array(nPix)
+
+      if (!this.reuseTab) {
+        this.quantizer = new NeuQuant(this.pixels, this.sample)
+        this.quantizer.buildColormap()
+        this.colorTab = this.quantizer.getColormap()
+      }
+
+      var k = 0
+      for (var j = 0; j < nPix; j++) {
+        var index = this.quantizer.lookupRGB(
+          this.pixels[k++] & 0xff,
+          this.pixels[k++] & 0xff,
+          this.pixels[k++] & 0xff
+        )
+
+        this.usedEntry[index] = true
+        this.indexedPixels[j] = index
+      }
+
+      this.colorDepth = 8
+      this.palSizeNeu = 7
+      this.pixels = null
+    } else if (this.algorithm === 'octree') {
+      this.colors = []
+
+      if (!this.reuseTab) {
+        this.quantizer = new OctreeQuant()
+      }
+
+      for (var i = 0; i < h; i++) {
+        for (var j = 0; j < w; j++) {
+          var b = i * w * 4 + j * 4
+          const color = new Color(data[b], data[b + 1], data[b + 2])
+          this.colors.push(color)
+
+          if (!this.reuseTab) {
+            this.quantizer.addColor(color)
+          }
+        }
+      }
+
+      const nPix = this.colors.length
+      this.indexedPixels = new Uint8Array(nPix)
+
+      if (!this.reuseTab) {
+        this.colorTab = []
+        const palette = this.quantizer.makePalette(Math.pow(2, this.palSizeOct + 1))
+
+        for (const p of palette) {
+          this.colorTab.push(p.red, p.green, p.blue)
+        }
+      }
+
+      for (var i = 0; i < nPix; i++) {
+        this.indexedPixels[i] = this.quantizer.getPaletteIndex(this.colors[i])
+      }
+
+      this.colorDepth = this.palSizeOct + 1
+    }
+
+    if (this.transparent !== null) {
+      this.transIndex = this.findClosest(this.transparent)
+
+      for (var pixelIndex = 0; pixelIndex < nPix; pixelIndex++) {
+        if (this.image[pixelIndex * 4 + 3] == 0) {
+          this.indexedPixels[pixelIndex] = this.transIndex
+        }
+      }
+    }
+  }
+
+  findClosest(c) {
+    if (this.colorTab === null) {
+      return -1
+    }
+
+    var r = (c & 0xff0000) >> 16
+    var g = (c & 0x00ff00) >> 8
+    var b = c & 0x0000ff
+    var minpos = 0
+    var dmin = 256 * 256 * 256
+    var len = this.colorTab.length
+
+    for (var i = 0; i < len; ) {
+      var index = i / 3
+      var dr = r - (this.colorTab[i++] & 0xff)
+      var dg = g - (this.colorTab[i++] & 0xff)
+      var db = b - (this.colorTab[i++] & 0xff)
+      var d = dr * dr + dg * dg + db * db
+      if (this.usedEntry[index] && d < dmin) {
+        dmin = d
+        minpos = index
+      }
+    }
+
+    return minpos
+  }
+
+  setFrameRate(fps) {
+    this.delay = Math.round(100 / fps)
+  }
+
+  setDelay(ms) {
+    this.delay = Math.round(ms / 10)
+  }
+
+  setDispose(code) {
+    if (code >= 0) {
+      this.dispose = code
+    }
+  }
+
+  setRepeat(repeat) {
+    this.repeat = repeat
+  }
+
+  setTransparent(color) {
+    this.transparent = color
+  }
+
+  setQuality(quality) {
+    if (quality < 1) {
+      quality = 1
+    }
+    this.quality = quality
+  }
+
+  setThreshold(threshold) {
+    if (threshold > 100) {
+      threshold = 100
+    } else if (threshold < 0) {
+      threshold = 0
+    }
+    this.threshold = threshold
+  }
+
+  setPaletteSize(size) {
+    if (size > 7) {
+      size = 7
+    } else if (size < 4) {
+      size = 4
+    }
+    this.palSizeOct = size
+  }
+
+  writeLSD() {
+    this.writeShort(this.width)
+    this.writeShort(this.height)
+
+    this.out.writeByte(0x80 | 0x70 | 0x00 | this.palSizeNeu)
+
+    this.out.writeByte(0)
+    this.out.writeByte(0)
+  }
+
+  writeGraphicCtrlExt() {
+    this.out.writeByte(0x21)
+    this.out.writeByte(0xf9)
+    this.out.writeByte(4)
+
+    var transp, disp
+    if (this.transparent === null) {
+      transp = 0
+      disp = 0
+    } else {
+      transp = 1
+      disp = 2
+    }
+
+    if (this.dispose >= 0) {
+      disp = this.dispose & 7
+    }
+    disp <<= 2
+
+    this.out.writeByte(0 | disp | 0 | transp)
+
+    this.writeShort(this.delay)
+    this.out.writeByte(this.transIndex)
+    this.out.writeByte(0)
+  }
+
+  writeNetscapeExt() {
+    this.out.writeByte(0x21)
+    this.out.writeByte(0xff)
+    this.out.writeByte(11)
+    this.out.writeUTFBytes('NETSCAPE2.0')
+    this.out.writeByte(3)
+    this.out.writeByte(1)
+    this.writeShort(this.repeat)
+    this.out.writeByte(0)
+  }
+
+  writeImageDesc() {
+    this.out.writeByte(0x2c)
+    this.writeShort(0)
+    this.writeShort(0)
+    this.writeShort(this.width)
+    this.writeShort(this.height)
+
+    if (this.firstFrame) {
+      this.out.writeByte(0)
+    } else {
+      this.out.writeByte(0x80 | 0 | 0 | 0 | this.palSizeNeu)
+    }
+  }
+
+  writePalette() {
+    this.out.writeBytes(this.colorTab)
+    var n = 3 * 256 - this.colorTab.length
+    for (var i = 0; i < n; i++) {
+      this.out.writeByte(0)
+    }
+  }
+
+  writeShort(pValue) {
+    this.out.writeByte(pValue & 0xff)
+    this.out.writeByte((pValue >> 8) & 0xff)
+  }
+
+  writePixels() {
+    var enc = new LZWEncoder(this.width, this.height, this.indexedPixels, this.colorDepth)
+    enc.encode(this.out)
+  }
+
+  finish() {
+    this.out.writeByte(0x3b)
+    this.end()
+  }
+}
+
+module.exports = GIFEncoder
+
+
+/***/ }),
+
+/***/ 576:
+/***/ ((module) => {
+
+/*
+  LZWEncoder.js
+
+  Authors
+  Kevin Weiner (original Java version - kweiner@fmsware.com)
+  Thibault Imbert (AS3 version - bytearray.org)
+  Johan Nordberg (JS version - code@johan-nordberg.com)
+
+  Acknowledgements
+  GIFCOMPR.C - GIF Image compression routines
+  Lempel-Ziv compression based on 'compress'. GIF modifications by
+  David Rowley (mgardi@watdcsu.waterloo.edu)
+  GIF Image compression - modified 'compress'
+  Based on: compress.c - File compression ala IEEE Computer, June 1984.
+  By Authors: Spencer W. Thomas (decvax!harpo!utah-cs!utah-gr!thomas)
+  Jim McKie (decvax!mcvax!jim)
+  Steve Davies (decvax!vax135!petsd!peora!srd)
+  Ken Turkowski (decvax!decwrl!turtlevax!ken)
+  James A. Woods (decvax!ihnp4!ames!jaw)
+  Joe Orost (decvax!vax135!petsd!joe)
+*/
+
+var EOF = -1
+var BITS = 12
+var HSIZE = 5003 // 80% occupancy
+var masks = [
+  0x0000,
+  0x0001,
+  0x0003,
+  0x0007,
+  0x000f,
+  0x001f,
+  0x003f,
+  0x007f,
+  0x00ff,
+  0x01ff,
+  0x03ff,
+  0x07ff,
+  0x0fff,
+  0x1fff,
+  0x3fff,
+  0x7fff,
+  0xffff
+]
+
+function LZWEncoder(width, height, pixels, colorDepth) {
+  var initCodeSize = Math.max(2, colorDepth)
+
+  var accum = new Uint8Array(256)
+  var htab = new Int32Array(HSIZE)
+  var codetab = new Int32Array(HSIZE)
+
+  var cur_accum,
+    cur_bits = 0
+  var a_count
+  var free_ent = 0 // first unused entry
+  var maxcode
+
+  // block compression parameters -- after all codes are used up,
+  // and compression rate changes, start over.
+  var clear_flg = false
+
+  // Algorithm: use open addressing double hashing (no chaining) on the
+  // prefix code / next character combination. We do a variant of Knuth's
+  // algorithm D (vol. 3, sec. 6.4) along with G. Knott's relatively-prime
+  // secondary probe. Here, the modular division first probe is gives way
+  // to a faster exclusive-or manipulation. Also do block compression with
+  // an adaptive reset, whereby the code table is cleared when the compression
+  // ratio decreases, but after the table fills. The variable-length output
+  // codes are re-sized at this point, and a special CLEAR code is generated
+  // for the decompressor. Late addition: construct the table according to
+  // file size for noticeable speed improvement on small files. Please direct
+  // questions about this implementation to ames!jaw.
+  var g_init_bits, ClearCode, EOFCode
+
+  // Add a character to the end of the current packet, and if it is 254
+  // characters, flush the packet to disk.
+  function char_out(c, outs) {
+    accum[a_count++] = c
+    if (a_count >= 254) flush_char(outs)
+  }
+
+  // Clear out the hash table
+  // table clear for block compress
+  function cl_block(outs) {
+    cl_hash(HSIZE)
+    free_ent = ClearCode + 2
+    clear_flg = true
+    output(ClearCode, outs)
+  }
+
+  // Reset code table
+  function cl_hash(hsize) {
+    for (var i = 0; i < hsize; ++i) htab[i] = -1
+  }
+
+  function compress(init_bits, outs) {
+    var fcode, c, i, ent, disp, hsize_reg, hshift
+
+    // Set up the globals: g_init_bits - initial number of bits
+    g_init_bits = init_bits
+
+    // Set up the necessary values
+    clear_flg = false
+    n_bits = g_init_bits
+    maxcode = MAXCODE(n_bits)
+
+    ClearCode = 1 << (init_bits - 1)
+    EOFCode = ClearCode + 1
+    free_ent = ClearCode + 2
+
+    a_count = 0 // clear packet
+
+    ent = nextPixel()
+
+    hshift = 0
+    for (fcode = HSIZE; fcode < 65536; fcode *= 2) ++hshift
+    hshift = 8 - hshift // set hash code range bound
+    hsize_reg = HSIZE
+    cl_hash(hsize_reg) // clear hash table
+
+    output(ClearCode, outs)
+
+    outer_loop: while ((c = nextPixel()) != EOF) {
+      fcode = (c << BITS) + ent
+      i = (c << hshift) ^ ent // xor hashing
+      if (htab[i] === fcode) {
+        ent = codetab[i]
+        continue
+      } else if (htab[i] >= 0) {
+        // non-empty slot
+        disp = hsize_reg - i // secondary hash (after G. Knott)
+        if (i === 0) disp = 1
+        do {
+          if ((i -= disp) < 0) i += hsize_reg
+          if (htab[i] === fcode) {
+            ent = codetab[i]
+            continue outer_loop
+          }
+        } while (htab[i] >= 0)
+      }
+      output(ent, outs)
+      ent = c
+      if (free_ent < 1 << BITS) {
+        codetab[i] = free_ent++ // code -> hashtable
+        htab[i] = fcode
+      } else {
+        cl_block(outs)
+      }
+    }
+
+    // Put out the final code.
+    output(ent, outs)
+    output(EOFCode, outs)
+  }
+
+  function encode(outs) {
+    outs.writeByte(initCodeSize) // write "initial code size" byte
+    remaining = width * height // reset navigation variables
+    curPixel = 0
+    compress(initCodeSize + 1, outs) // compress and write the pixel data
+    outs.writeByte(0) // write block terminator
+  }
+
+  // Flush the packet to disk, and reset the accumulator
+  function flush_char(outs) {
+    if (a_count > 0) {
+      outs.writeByte(a_count)
+      outs.writeBytes(accum, 0, a_count)
+      a_count = 0
+    }
+  }
+
+  function MAXCODE(n_bits) {
+    return (1 << n_bits) - 1
+  }
+
+  // Return the next pixel from the image
+  function nextPixel() {
+    if (remaining === 0) return EOF
+    --remaining
+    var pix = pixels[curPixel++]
+    return pix & 0xff
+  }
+
+  function output(code, outs) {
+    cur_accum &= masks[cur_bits]
+
+    if (cur_bits > 0) cur_accum |= code << cur_bits
+    else cur_accum = code
+
+    cur_bits += n_bits
+
+    while (cur_bits >= 8) {
+      char_out(cur_accum & 0xff, outs)
+      cur_accum >>= 8
+      cur_bits -= 8
+    }
+
+    // If the next entry is going to be too big for the code size,
+    // then increase it, if possible.
+    if (free_ent > maxcode || clear_flg) {
+      if (clear_flg) {
+        maxcode = MAXCODE((n_bits = g_init_bits))
+        clear_flg = false
+      } else {
+        ++n_bits
+        if (n_bits == BITS) maxcode = 1 << BITS
+        else maxcode = MAXCODE(n_bits)
+      }
+    }
+
+    if (code == EOFCode) {
+      // At EOF, write the rest of the buffer.
+      while (cur_bits > 0) {
+        char_out(cur_accum & 0xff, outs)
+        cur_accum >>= 8
+        cur_bits -= 8
+      }
+      flush_char(outs)
+    }
+  }
+
+  this.encode = encode
+}
+
+module.exports = LZWEncoder
+
+
+/***/ }),
+
+/***/ 9216:
+/***/ ((module) => {
+
+/*
+  Authors
+  Dmitry Alimov (Python version) https://github.com/delimitry/octree_color_quantizer
+  Tom MacWright (JavaScript version) https://observablehq.com/@tmcw/octree-color-quantization
+*/
+
+const MAX_DEPTH = 8
+
+class OctreeQuant {
+  constructor() {
+    this.levels = Array.from({ length: MAX_DEPTH }, () => [])
+    this.root = new Node(0, this)
+  }
+
+  addColor(color) {
+    this.root.addColor(color, 0, this)
+  }
+
+  makePalette(colorCount) {
+    let palette = []
+    let paletteIndex = 0
+    let leafCount = this.leafNodes.length
+    for (let level = MAX_DEPTH - 1; level > -1; level -= 1) {
+      if (this.levels[level]) {
+        for (let node of this.levels[level]) {
+          leafCount -= node.removeLeaves()
+          if (leafCount <= colorCount) break
+        }
+        if (leafCount <= colorCount) break
+        this.levels[level] = []
+      }
+    }
+    for (let node of this.leafNodes) {
+      if (paletteIndex >= colorCount) break
+      if (node.isLeaf) palette.push(node.color)
+      node.paletteIndex = paletteIndex
+      paletteIndex++
+    }
+    return palette
+  }
+
+  *makePaletteIncremental(colorCount) {
+    let palette = []
+    let paletteIndex = 0
+    let leafCount = this.leafNodes.length
+    for (let level = MAX_DEPTH - 1; level > -1; level -= 1) {
+      if (this.levels[level]) {
+        for (let node of this.levels[level]) {
+          leafCount -= node.removeLeaves()
+          if (leafCount <= colorCount) break
+        }
+        if (leafCount <= colorCount) break
+        this.levels[level] = []
+      }
+      yield
+    }
+    for (let node of this.leafNodes) {
+      if (paletteIndex >= colorCount) break
+      if (node.isLeaf) palette.push(node.color)
+      node.paletteIndex = paletteIndex
+      paletteIndex++
+    }
+    yield
+    return palette
+  }
+
+  get leafNodes() {
+    return this.root.leafNodes
+  }
+
+  addLevelNode(level, node) {
+    this.levels[level].push(node)
+  }
+
+  getPaletteIndex(color) {
+    return this.root.getPaletteIndex(color, 0)
+  }
+}
+
+class Node {
+  constructor(level, parent) {
+    this._color = new Color(0, 0, 0)
+    this.pixelCount = 0
+    this.paletteIndex = 0
+    this.children = []
+    this._debugColor
+    if (level < MAX_DEPTH - 1) parent.addLevelNode(level, this)
+  }
+
+  get isLeaf() {
+    return this.pixelCount > 0
+  }
+
+  get leafNodes() {
+    let leafNodes = []
+
+    for (let node of this.children) {
+      if (!node) continue
+      if (node.isLeaf) {
+        leafNodes.push(node)
+      } else {
+        leafNodes.push(...node.leafNodes)
+      }
+    }
+
+    return leafNodes
+  }
+
+  addColor(color, level, parent) {
+    if (level >= MAX_DEPTH) {
+      this._color.add(color)
+      this.pixelCount++
+      return
+    }
+    let index = getColorIndex(color, level)
+    if (!this.children[index]) {
+      this.children[index] = new Node(level, parent)
+    }
+    this.children[index].addColor(color, level + 1, parent)
+  }
+
+  getPaletteIndex(color, level) {
+    if (this.isLeaf) {
+      return this.paletteIndex
+    }
+    let index = getColorIndex(color, level)
+    if (this.children[index]) {
+      return this.children[index].getPaletteIndex(color, level + 1)
+    } else {
+      for (let node of this.children) {
+        if (node) {
+          return node.getPaletteIndex(color, level + 1)
+        }
+      }
+    }
+  }
+
+  removeLeaves() {
+    let result = 0
+    for (let node of this.children) {
+      if (!node) continue
+      this._color.add(node._color)
+      this.pixelCount += node.pixelCount
+      result++
+    }
+    this.children = []
+    return result - 1
+  }
+
+  get debugColor() {
+    if (this._debugColor) return this._debugColor
+    if (this.isLeaf) return this.color
+
+    let c = new Color()
+    let count = 0
+
+    function traverse(node) {
+      for (let child of node.children) {
+        if (child.isLeaf) {
+          c.add(child._color)
+          count++
+        } else {
+          traverse(child)
+        }
+      }
+    }
+
+    traverse(this)
+    return c.normalized(count)
+  }
+
+  get color() {
+    return this._color.normalized(this.pixelCount)
+  }
+}
+
+class Color {
+  constructor(red = 0, green = 0, blue = 0) {
+    this.red = red
+    this.green = green
+    this.blue = blue
+  }
+
+  clone() {
+    return new Color(this.red, this.green, this.blue)
+  }
+
+  get array() {
+    return [this.red, this.green, this.blue, this.red + this.green + this.blue]
+  }
+
+  toString() {
+    return [this.red, this.green, this.blue].join(',')
+  }
+
+  toCSS() {
+    return `rgb(${[this.red, this.green, this.blue].map(n => Math.floor(n)).join(',')})`
+  }
+
+  normalized(pixelCount) {
+    return new Color(this.red / pixelCount, this.green / pixelCount, this.blue / pixelCount)
+  }
+
+  add(color) {
+    this.red += color.red
+    this.green += color.green
+    this.blue += color.blue
+  }
+}
+
+function getColorIndex(color, level) {
+  let index = 0
+  let mask = 0b10000000 >> level
+  if (color.red & mask) index |= 0b100
+  if (color.green & mask) index |= 0b010
+  if (color.blue & mask) index |= 0b001
+  return index
+}
+
+module.exports = { OctreeQuant, Node, Color }
+
+
+/***/ }),
+
+/***/ 9770:
+/***/ ((module) => {
+
+/* NeuQuant Neural-Net Quantization Algorithm
+ * ------------------------------------------
+ *
+ * Copyright (c) 1994 Anthony Dekker
+ *
+ * NEUQUANT Neural-Net quantization algorithm by Anthony Dekker, 1994.
+ * See "Kohonen neural networks for optimal colour quantization"
+ * in "Network: Computation in Neural Systems" Vol. 5 (1994) pp 351-367.
+ * for a discussion of the algorithm.
+ * See also  http://members.ozemail.com.au/~dekker/NEUQUANT.HTML
+ *
+ * Any party obtaining a copy of these files from the author, directly or
+ * indirectly, is granted, free of charge, a full and unrestricted irrevocable,
+ * world-wide, paid up, royalty-free, nonexclusive right and license to deal
+ * in this software and documentation files (the "Software"), including without
+ * limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons who receive
+ * copies from any such party to do so, with the only requirement being
+ * that this copyright notice remain intact.
+ *
+ * (JavaScript port 2012 by Johan Nordberg)
+ */
+
+var ncycles = 100 // number of learning cycles
+var netsize = 256 // number of colors used
+var maxnetpos = netsize - 1
+
+// defs for freq and bias
+var netbiasshift = 4 // bias for colour values
+var intbiasshift = 16 // bias for fractions
+var intbias = 1 << intbiasshift
+var gammashift = 10
+var gamma = 1 << gammashift
+var betashift = 10
+var beta = intbias >> betashift /* beta = 1/1024 */
+var betagamma = intbias << (gammashift - betashift)
+
+// defs for decreasing radius factor
+var initrad = netsize >> 3 // for 256 cols, radius starts
+var radiusbiasshift = 6 // at 32.0 biased by 6 bits
+var radiusbias = 1 << radiusbiasshift
+var initradius = initrad * radiusbias //and decreases by a
+var radiusdec = 30 // factor of 1/30 each cycle
+
+// defs for decreasing alpha factor
+var alphabiasshift = 10 // alpha starts at 1.0
+var initalpha = 1 << alphabiasshift
+var alphadec // biased by 10 bits
+
+/* radbias and alpharadbias used for radpower calculation */
+var radbiasshift = 8
+var radbias = 1 << radbiasshift
+var alpharadbshift = alphabiasshift + radbiasshift
+var alpharadbias = 1 << alpharadbshift
+
+// four primes near 500 - assume no image has a length so large that it is
+// divisible by all four primes
+var prime1 = 499
+var prime2 = 491
+var prime3 = 487
+var prime4 = 503
+var minpicturebytes = 3 * prime4
+
+/*
+  Constructor: NeuQuant
+
+  Arguments:
+
+  pixels - array of pixels in RGB format
+  samplefac - sampling factor 1 to 30 where lower is better quality
+
+  >
+  > pixels = [r, g, b, r, g, b, r, g, b, ..]
+  >
+*/
+function NeuQuant(pixels, samplefac) {
+  var network // int[netsize][4]
+  var netindex // for network lookup - really 256
+
+  // bias and freq arrays for learning
+  var bias
+  var freq
+  var radpower
+
+  /*
+    Private Method: init
+
+    sets up arrays
+  */
+  function init() {
+    network = []
+    netindex = new Int32Array(256)
+    bias = new Int32Array(netsize)
+    freq = new Int32Array(netsize)
+    radpower = new Int32Array(netsize >> 3)
+
+    var i, v
+    for (i = 0; i < netsize; i++) {
+      v = (i << (netbiasshift + 8)) / netsize
+      network[i] = new Float64Array([v, v, v, 0])
+      //network[i] = [v, v, v, 0]
+      freq[i] = intbias / netsize
+      bias[i] = 0
+    }
+  }
+
+  /*
+    Private Method: unbiasnet
+
+    unbiases network to give byte values 0..255 and record position i to prepare for sort
+  */
+  function unbiasnet() {
+    for (var i = 0; i < netsize; i++) {
+      network[i][0] >>= netbiasshift
+      network[i][1] >>= netbiasshift
+      network[i][2] >>= netbiasshift
+      network[i][3] = i // record color number
+    }
+  }
+
+  /*
+    Private Method: altersingle
+
+    moves neuron *i* towards biased (b,g,r) by factor *alpha*
+  */
+  function altersingle(alpha, i, b, g, r) {
+    network[i][0] -= (alpha * (network[i][0] - b)) / initalpha
+    network[i][1] -= (alpha * (network[i][1] - g)) / initalpha
+    network[i][2] -= (alpha * (network[i][2] - r)) / initalpha
+  }
+
+  /*
+    Private Method: alterneigh
+
+    moves neurons in *radius* around index *i* towards biased (b,g,r) by factor *alpha*
+  */
+  function alterneigh(radius, i, b, g, r) {
+    var lo = Math.abs(i - radius)
+    var hi = Math.min(i + radius, netsize)
+
+    var j = i + 1
+    var k = i - 1
+    var m = 1
+
+    var p, a
+    while (j < hi || k > lo) {
+      a = radpower[m++]
+
+      if (j < hi) {
+        p = network[j++]
+        p[0] -= (a * (p[0] - b)) / alpharadbias
+        p[1] -= (a * (p[1] - g)) / alpharadbias
+        p[2] -= (a * (p[2] - r)) / alpharadbias
+      }
+
+      if (k > lo) {
+        p = network[k--]
+        p[0] -= (a * (p[0] - b)) / alpharadbias
+        p[1] -= (a * (p[1] - g)) / alpharadbias
+        p[2] -= (a * (p[2] - r)) / alpharadbias
+      }
+    }
+  }
+
+  /*
+    Private Method: contest
+
+    searches for biased BGR values
+  */
+  function contest(b, g, r) {
+    /*
+      finds closest neuron (min dist) and updates freq
+      finds best neuron (min dist-bias) and returns position
+      for frequently chosen neurons, freq[i] is high and bias[i] is negative
+      bias[i] = gamma * ((1 / netsize) - freq[i])
+    */
+
+    var bestd = ~(1 << 31)
+    var bestbiasd = bestd
+    var bestpos = -1
+    var bestbiaspos = bestpos
+
+    var i, n, dist, biasdist, betafreq
+    for (i = 0; i < netsize; i++) {
+      n = network[i]
+
+      dist = Math.abs(n[0] - b) + Math.abs(n[1] - g) + Math.abs(n[2] - r)
+      if (dist < bestd) {
+        bestd = dist
+        bestpos = i
+      }
+
+      biasdist = dist - (bias[i] >> (intbiasshift - netbiasshift))
+      if (biasdist < bestbiasd) {
+        bestbiasd = biasdist
+        bestbiaspos = i
+      }
+
+      betafreq = freq[i] >> betashift
+      freq[i] -= betafreq
+      bias[i] += betafreq << gammashift
+    }
+
+    freq[bestpos] += beta
+    bias[bestpos] -= betagamma
+
+    return bestbiaspos
+  }
+
+  /*
+    Private Method: inxbuild
+
+    sorts network and builds netindex[0..255]
+  */
+  function inxbuild() {
+    var i,
+      j,
+      p,
+      q,
+      smallpos,
+      smallval,
+      previouscol = 0,
+      startpos = 0
+    for (i = 0; i < netsize; i++) {
+      p = network[i]
+      smallpos = i
+      smallval = p[1] // index on g
+      // find smallest in i..netsize-1
+      for (j = i + 1; j < netsize; j++) {
+        q = network[j]
+        if (q[1] < smallval) {
+          // index on g
+          smallpos = j
+          smallval = q[1] // index on g
+        }
+      }
+      q = network[smallpos]
+      // swap p (i) and q (smallpos) entries
+      if (i != smallpos) {
+        j = q[0]
+        q[0] = p[0]
+        p[0] = j
+        j = q[1]
+        q[1] = p[1]
+        p[1] = j
+        j = q[2]
+        q[2] = p[2]
+        p[2] = j
+        j = q[3]
+        q[3] = p[3]
+        p[3] = j
+      }
+      // smallval entry is now in position i
+
+      if (smallval != previouscol) {
+        netindex[previouscol] = (startpos + i) >> 1
+        for (j = previouscol + 1; j < smallval; j++) netindex[j] = i
+        previouscol = smallval
+        startpos = i
+      }
+    }
+    netindex[previouscol] = (startpos + maxnetpos) >> 1
+    for (j = previouscol + 1; j < 256; j++) netindex[j] = maxnetpos // really 256
+  }
+
+  /*
+    Private Method: inxsearch
+
+    searches for BGR values 0..255 and returns a color index
+  */
+  function inxsearch(b, g, r) {
+    var a, p, dist
+
+    var bestd = 1000 // biggest possible dist is 256*3
+    var best = -1
+
+    var i = netindex[g] // index on g
+    var j = i - 1 // start at netindex[g] and work outwards
+
+    while (i < netsize || j >= 0) {
+      if (i < netsize) {
+        p = network[i]
+        dist = p[1] - g // inx key
+        if (dist >= bestd) i = netsize
+        // stop iter
+        else {
+          i++
+          if (dist < 0) dist = -dist
+          a = p[0] - b
+          if (a < 0) a = -a
+          dist += a
+          if (dist < bestd) {
+            a = p[2] - r
+            if (a < 0) a = -a
+            dist += a
+            if (dist < bestd) {
+              bestd = dist
+              best = p[3]
+            }
+          }
+        }
+      }
+      if (j >= 0) {
+        p = network[j]
+        dist = g - p[1] // inx key - reverse dif
+        if (dist >= bestd) j = -1
+        // stop iter
+        else {
+          j--
+          if (dist < 0) dist = -dist
+          a = p[0] - b
+          if (a < 0) a = -a
+          dist += a
+          if (dist < bestd) {
+            a = p[2] - r
+            if (a < 0) a = -a
+            dist += a
+            if (dist < bestd) {
+              bestd = dist
+              best = p[3]
+            }
+          }
+        }
+      }
+    }
+
+    return best
+  }
+
+  /*
+    Private Method: learn
+
+    "Main Learning Loop"
+  */
+  function learn() {
+    var i
+
+    var lengthcount = pixels.length
+    var alphadec = 30 + (samplefac - 1) / 3
+    var samplepixels = lengthcount / (3 * samplefac)
+    var delta = ~~(samplepixels / ncycles)
+    var alpha = initalpha
+    var radius = initradius
+
+    var rad = radius >> radiusbiasshift
+
+    if (rad <= 1) rad = 0
+    for (i = 0; i < rad; i++) radpower[i] = alpha * (((rad * rad - i * i) * radbias) / (rad * rad))
+
+    var step
+    if (lengthcount < minpicturebytes) {
+      samplefac = 1
+      step = 3
+    } else if (lengthcount % prime1 !== 0) {
+      step = 3 * prime1
+    } else if (lengthcount % prime2 !== 0) {
+      step = 3 * prime2
+    } else if (lengthcount % prime3 !== 0) {
+      step = 3 * prime3
+    } else {
+      step = 3 * prime4
+    }
+
+    var b, g, r, j
+    var pix = 0 // current pixel
+
+    i = 0
+    while (i < samplepixels) {
+      b = (pixels[pix] & 0xff) << netbiasshift
+      g = (pixels[pix + 1] & 0xff) << netbiasshift
+      r = (pixels[pix + 2] & 0xff) << netbiasshift
+
+      j = contest(b, g, r)
+
+      altersingle(alpha, j, b, g, r)
+      if (rad !== 0) alterneigh(rad, j, b, g, r) // alter neighbours
+
+      pix += step
+      if (pix >= lengthcount) pix -= lengthcount
+
+      i++
+
+      if (delta === 0) delta = 1
+      if (i % delta === 0) {
+        alpha -= alpha / alphadec
+        radius -= radius / radiusdec
+        rad = radius >> radiusbiasshift
+
+        if (rad <= 1) rad = 0
+        for (j = 0; j < rad; j++)
+          radpower[j] = alpha * (((rad * rad - j * j) * radbias) / (rad * rad))
+      }
+    }
+  }
+
+  /*
+    Method: buildColormap
+
+    1. initializes network
+    2. trains it
+    3. removes misconceptions
+    4. builds colorindex
+  */
+  function buildColormap() {
+    init()
+    learn()
+    unbiasnet()
+    inxbuild()
+  }
+  this.buildColormap = buildColormap
+
+  /*
+    Method: getColormap
+
+    builds colormap from the index
+
+    returns array in the format:
+
+    >
+    > [r, g, b, r, g, b, r, g, b, ..]
+    >
+  */
+  function getColormap() {
+    var map = []
+    var index = []
+
+    for (var i = 0; i < netsize; i++) index[network[i][3]] = i
+
+    var k = 0
+    for (var l = 0; l < netsize; l++) {
+      var j = index[l]
+      map[k++] = network[j][0]
+      map[k++] = network[j][1]
+      map[k++] = network[j][2]
+    }
+    return map
+  }
+  this.getColormap = getColormap
+
+  /*
+    Method: lookupRGB
+
+    looks for the closest *r*, *g*, *b* color in the map and
+    returns its index
+  */
+  this.lookupRGB = inxsearch
+}
+
+module.exports = NeuQuant
+
 
 /***/ }),
 
@@ -63859,6 +65234,2690 @@ var Et=Object.create;var oe=Object.defineProperty;var vt=Object.getOwnPropertyDe
 `+s),e.push(i+"m+"+Le.exports.humanize(this.diff)+"\x1B[0m")}else e[0]=sn()+r+" "+e[0]}function sn(){return y.inspectOpts.hideDate?"":new Date().toISOString()+" "}function fn(...e){return process.stderr.write(Se.formatWithOptions(y.inspectOpts,...e)+`
 `)}function an(e){e?process.env.DEBUG=e:delete process.env.DEBUG}function un(){return process.env.DEBUG}function cn(e){e.inspectOpts={};let r=Object.keys(y.inspectOpts);for(let t=0;t<r.length;t++)e.inspectOpts[r[t]]=y.inspectOpts[r[t]]}Le.exports=$e()(y);var{formatters:Xr}=Le.exports;Xr.o=function(e){return this.inspectOpts.colors=this.useColors,Se.inspect(e,this.inspectOpts).split(`
 `).map(r=>r.trim()).join(" ")};Xr.O=function(e){return this.inspectOpts.colors=this.useColors,Se.inspect(e,this.inspectOpts)}});var Jr=v((Hn,Qe)=>{typeof process=="undefined"||process.type==="renderer"||process.browser===!0||process.__nwjs?Qe.exports=Gr():Qe.exports=$r()});var et=v((Kn,kr)=>{kr.exports=Qr;function Qr(e,r){if(e&&r)return Qr(e)(r);if(typeof e!="function")throw new TypeError("need wrapper function");return Object.keys(e).forEach(function(n){t[n]=e[n]}),t;function t(){for(var n=new Array(arguments.length),i=0;i<n.length;i++)n[i]=arguments[i];var s=e.apply(this,n),o=n[n.length-1];return typeof s=="function"&&s!==o&&Object.keys(o).forEach(function(f){s[f]=o[f]}),s}}});var er=v((Vn,ke)=>{var rt=et();ke.exports=rt(Oe);ke.exports.strict=rt(tt);Oe.proto=Oe(function(){Object.defineProperty(Function.prototype,"once",{value:function(){return Oe(this)},configurable:!0}),Object.defineProperty(Function.prototype,"onceStrict",{value:function(){return tt(this)},configurable:!0})});function Oe(e){var r=function(){return r.called?r.value:(r.called=!0,r.value=e.apply(this,arguments))};return r.called=!1,r}function tt(e){var r=function(){if(r.called)throw new Error(r.onceError);return r.called=!0,r.value=e.apply(this,arguments)},t=e.name||"Function wrapped with `once`";return r.onceError=t+" shouldn't be called more than once",r.called=!1,r}});var ot=v((Xn,it)=>{var dn=er(),ln=function(){},hn=function(e){return e.setHeader&&typeof e.abort=="function"},mn=function(e){return e.stdio&&Array.isArray(e.stdio)&&e.stdio.length===3},nt=function(e,r,t){if(typeof r=="function")return nt(e,null,r);r||(r={}),t=dn(t||ln);var n=e._writableState,i=e._readableState,s=r.readable||r.readable!==!1&&e.readable,o=r.writable||r.writable!==!1&&e.writable,f=!1,u=function(){e.writable||l()},l=function(){o=!1,s||t.call(e)},a=function(){s=!1,o||t.call(e)},d=function(x){t.call(e,x?new Error("exited with error code: "+x):null)},c=function(x){t.call(e,x)},h=function(){process.nextTick(E)},E=function(){if(!f){if(s&&!(i&&i.ended&&!i.destroyed))return t.call(e,new Error("premature close"));if(o&&!(n&&n.ended&&!n.destroyed))return t.call(e,new Error("premature close"))}},p=function(){e.req.on("finish",l)};return hn(e)?(e.on("complete",l),e.on("abort",h),e.req?p():e.on("request",p)):o&&!n&&(e.on("end",u),e.on("close",u)),mn(e)&&e.on("exit",d),e.on("end",a),e.on("finish",l),r.error!==!1&&e.on("error",c),e.on("close",h),function(){f=!0,e.removeListener("complete",l),e.removeListener("abort",h),e.removeListener("request",p),e.req&&e.req.removeListener("finish",l),e.removeListener("end",u),e.removeListener("close",u),e.removeListener("finish",l),e.removeListener("exit",d),e.removeListener("end",a),e.removeListener("error",c),e.removeListener("close",h)}};it.exports=nt});var at=v(($n,ft)=>{var pn=er(),xn=ot(),ze;try{ze=__nccwpck_require__(9896)}catch{}var te=function(){},En=/^v?\.0/.test(process.version),_e=function(e){return typeof e=="function"},vn=function(e){return!En||!ze?!1:(e instanceof(ze.ReadStream||te)||e instanceof(ze.WriteStream||te))&&_e(e.close)},wn=function(e){return e.setHeader&&_e(e.abort)},yn=function(e,r,t,n){n=pn(n);var i=!1;e.on("close",function(){i=!0}),xn(e,{readable:r,writable:t},function(o){if(o)return n(o);i=!0,n()});var s=!1;return function(o){if(!i&&!s){if(s=!0,vn(e))return e.close(te);if(wn(e))return e.abort();if(_e(e.destroy))return e.destroy();n(o||new Error("stream was destroyed"))}}},st=function(e){e()},gn=function(e,r){return e.pipe(r)},Cn=function(){var e=Array.prototype.slice.call(arguments),r=_e(e[e.length-1]||te)&&e.pop()||te;if(Array.isArray(e[0])&&(e=e[0]),e.length<2)throw new Error("pump requires two streams per minimum");var t,n=e.map(function(i,s){var o=s<e.length-1,f=s>0;return yn(i,o,f,function(u){t||(t=u),u&&n.forEach(st),!o&&(n.forEach(st),r(t))})});return e.reduce(gn)};ft.exports=Cn});var ct=v((Jn,ut)=>{"use strict";var{PassThrough:bn}=__nccwpck_require__(2203);ut.exports=e=>{e={...e};let{array:r}=e,{encoding:t}=e,n=t==="buffer",i=!1;r?i=!(t||n):t=t||"utf8",n&&(t=null);let s=new bn({objectMode:i});t&&s.setEncoding(t);let o=0,f=[];return s.on("data",u=>{f.push(u),i?o=f.length:o+=u.length}),s.getBufferedValue=()=>r?f:n?Buffer.concat(f,o):f.join(""),s.getBufferedLength=()=>o,s}});var dt=v((Qn,X)=>{"use strict";var{constants:Fn}=__nccwpck_require__(181),In=at(),Sn=ct(),Re=class extends Error{constructor(){super("maxBuffer exceeded"),this.name="MaxBufferError"}};async function De(e,r){if(!e)return Promise.reject(new Error("Expected a stream"));r={maxBuffer:1/0,...r};let{maxBuffer:t}=r,n;return await new Promise((i,s)=>{let o=f=>{f&&n.getBufferedLength()<=Fn.MAX_LENGTH&&(f.bufferedData=n.getBufferedValue()),s(f)};n=In(e,Sn(r),f=>{if(f){o(f);return}i()}),n.on("data",()=>{n.getBufferedLength()>t&&o(new Re)})}),n.getBufferedValue()}X.exports=De;X.exports.default=De;X.exports.buffer=(e,r)=>De(e,{...r,encoding:"buffer"});X.exports.array=(e,r)=>De(e,{...r,array:!0});X.exports.MaxBufferError=Re});var ht=v((kn,lt)=>{"use strict";var S=Jr()("extract-zip"),{createWriteStream:Ln,promises:$}=__nccwpck_require__(9896),On=dt(),W=__nccwpck_require__(6928),{promisify:tr}=__nccwpck_require__(9023),zn=__nccwpck_require__(2203),_n=Xe(),Rn=tr(_n.open),Dn=tr(zn.pipeline),rr=class{constructor(r,t){this.zipPath=r,this.opts=t}async extract(){return S("opening",this.zipPath,"with opts",this.opts),this.zipfile=await Rn(this.zipPath,{lazyEntries:!0}),this.canceled=!1,new Promise((r,t)=>{this.zipfile.on("error",n=>{this.canceled=!0,t(n)}),this.zipfile.readEntry(),this.zipfile.on("close",()=>{this.canceled||(S("zip extraction complete"),r())}),this.zipfile.on("entry",async n=>{if(this.canceled){S("skipping entry",n.fileName,{cancelled:this.canceled});return}if(S("zipfile entry",n.fileName),n.fileName.startsWith("__MACOSX/")){this.zipfile.readEntry();return}let i=W.dirname(W.join(this.opts.dir,n.fileName));try{await $.mkdir(i,{recursive:!0});let s=await $.realpath(i);if(W.relative(this.opts.dir,s).split(W.sep).includes(".."))throw new Error(`Out of bound path "${s}" found while processing file ${n.fileName}`);await this.extractEntry(n),S("finished processing",n.fileName),this.zipfile.readEntry()}catch(s){this.canceled=!0,this.zipfile.close(),t(s)}})})}async extractEntry(r){if(this.canceled){S("skipping entry extraction",r.fileName,{cancelled:this.canceled});return}this.opts.onEntry&&this.opts.onEntry(r,this.zipfile);let t=W.join(this.opts.dir,r.fileName),n=r.externalFileAttributes>>16&65535,i=61440,s=16384,f=(n&i)===40960,u=(n&i)===s;!u&&r.fileName.endsWith("/")&&(u=!0);let l=r.versionMadeBy>>8;u||(u=l===0&&r.externalFileAttributes===16),S("extracting entry",{filename:r.fileName,isDir:u,isSymlink:f});let a=this.getExtractedMode(n,u)&511,d=u?t:W.dirname(t),c={recursive:!0};if(u&&(c.mode=a),S("mkdir",{dir:d,...c}),await $.mkdir(d,c),u)return;S("opening read stream",t);let h=await tr(this.zipfile.openReadStream.bind(this.zipfile))(r);if(f){let E=await On(h);S("creating symlink",E,t),await $.symlink(E,t)}else await Dn(h,Ln(t,{mode:a}))}getExtractedMode(r,t){let n=r;return n===0&&(t?(this.opts.defaultDirMode&&(n=parseInt(this.opts.defaultDirMode,10)),n||(n=493)):(this.opts.defaultFileMode&&(n=parseInt(this.opts.defaultFileMode,10)),n||(n=420))),n}};lt.exports=async function(e,r){if(S("creating target directory",r.dir),!W.isAbsolute(r.dir))throw new Error("Target directory is expected to be absolute");return await $.mkdir(r.dir,{recursive:!0}),r.dir=await $.realpath(r.dir),new rr(e,r).extract()}});var Tn={};Ct(Tn,{extract:()=>Un,yauzl:()=>pt,yazl:()=>mt});module.exports=bt(Tn);var mt=sr(Fr()),pt=sr(Xe()),An=ht(),Un=An;0&&(0);
+
+
+/***/ }),
+
+/***/ 6106:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let interlaceUtils = __nccwpck_require__(2689);
+
+let pixelBppMapper = [
+  // 0 - dummy entry
+  function () {},
+
+  // 1 - L
+  // 0: 0, 1: 0, 2: 0, 3: 0xff
+  function (pxData, data, pxPos, rawPos) {
+    if (rawPos === data.length) {
+      throw new Error("Ran out of data");
+    }
+
+    let pixel = data[rawPos];
+    pxData[pxPos] = pixel;
+    pxData[pxPos + 1] = pixel;
+    pxData[pxPos + 2] = pixel;
+    pxData[pxPos + 3] = 0xff;
+  },
+
+  // 2 - LA
+  // 0: 0, 1: 0, 2: 0, 3: 1
+  function (pxData, data, pxPos, rawPos) {
+    if (rawPos + 1 >= data.length) {
+      throw new Error("Ran out of data");
+    }
+
+    let pixel = data[rawPos];
+    pxData[pxPos] = pixel;
+    pxData[pxPos + 1] = pixel;
+    pxData[pxPos + 2] = pixel;
+    pxData[pxPos + 3] = data[rawPos + 1];
+  },
+
+  // 3 - RGB
+  // 0: 0, 1: 1, 2: 2, 3: 0xff
+  function (pxData, data, pxPos, rawPos) {
+    if (rawPos + 2 >= data.length) {
+      throw new Error("Ran out of data");
+    }
+
+    pxData[pxPos] = data[rawPos];
+    pxData[pxPos + 1] = data[rawPos + 1];
+    pxData[pxPos + 2] = data[rawPos + 2];
+    pxData[pxPos + 3] = 0xff;
+  },
+
+  // 4 - RGBA
+  // 0: 0, 1: 1, 2: 2, 3: 3
+  function (pxData, data, pxPos, rawPos) {
+    if (rawPos + 3 >= data.length) {
+      throw new Error("Ran out of data");
+    }
+
+    pxData[pxPos] = data[rawPos];
+    pxData[pxPos + 1] = data[rawPos + 1];
+    pxData[pxPos + 2] = data[rawPos + 2];
+    pxData[pxPos + 3] = data[rawPos + 3];
+  },
+];
+
+let pixelBppCustomMapper = [
+  // 0 - dummy entry
+  function () {},
+
+  // 1 - L
+  // 0: 0, 1: 0, 2: 0, 3: 0xff
+  function (pxData, pixelData, pxPos, maxBit) {
+    let pixel = pixelData[0];
+    pxData[pxPos] = pixel;
+    pxData[pxPos + 1] = pixel;
+    pxData[pxPos + 2] = pixel;
+    pxData[pxPos + 3] = maxBit;
+  },
+
+  // 2 - LA
+  // 0: 0, 1: 0, 2: 0, 3: 1
+  function (pxData, pixelData, pxPos) {
+    let pixel = pixelData[0];
+    pxData[pxPos] = pixel;
+    pxData[pxPos + 1] = pixel;
+    pxData[pxPos + 2] = pixel;
+    pxData[pxPos + 3] = pixelData[1];
+  },
+
+  // 3 - RGB
+  // 0: 0, 1: 1, 2: 2, 3: 0xff
+  function (pxData, pixelData, pxPos, maxBit) {
+    pxData[pxPos] = pixelData[0];
+    pxData[pxPos + 1] = pixelData[1];
+    pxData[pxPos + 2] = pixelData[2];
+    pxData[pxPos + 3] = maxBit;
+  },
+
+  // 4 - RGBA
+  // 0: 0, 1: 1, 2: 2, 3: 3
+  function (pxData, pixelData, pxPos) {
+    pxData[pxPos] = pixelData[0];
+    pxData[pxPos + 1] = pixelData[1];
+    pxData[pxPos + 2] = pixelData[2];
+    pxData[pxPos + 3] = pixelData[3];
+  },
+];
+
+function bitRetriever(data, depth) {
+  let leftOver = [];
+  let i = 0;
+
+  function split() {
+    if (i === data.length) {
+      throw new Error("Ran out of data");
+    }
+    let byte = data[i];
+    i++;
+    let byte8, byte7, byte6, byte5, byte4, byte3, byte2, byte1;
+    switch (depth) {
+      default:
+        throw new Error("unrecognised depth");
+      case 16:
+        byte2 = data[i];
+        i++;
+        leftOver.push((byte << 8) + byte2);
+        break;
+      case 4:
+        byte2 = byte & 0x0f;
+        byte1 = byte >> 4;
+        leftOver.push(byte1, byte2);
+        break;
+      case 2:
+        byte4 = byte & 3;
+        byte3 = (byte >> 2) & 3;
+        byte2 = (byte >> 4) & 3;
+        byte1 = (byte >> 6) & 3;
+        leftOver.push(byte1, byte2, byte3, byte4);
+        break;
+      case 1:
+        byte8 = byte & 1;
+        byte7 = (byte >> 1) & 1;
+        byte6 = (byte >> 2) & 1;
+        byte5 = (byte >> 3) & 1;
+        byte4 = (byte >> 4) & 1;
+        byte3 = (byte >> 5) & 1;
+        byte2 = (byte >> 6) & 1;
+        byte1 = (byte >> 7) & 1;
+        leftOver.push(byte1, byte2, byte3, byte4, byte5, byte6, byte7, byte8);
+        break;
+    }
+  }
+
+  return {
+    get: function (count) {
+      while (leftOver.length < count) {
+        split();
+      }
+      let returner = leftOver.slice(0, count);
+      leftOver = leftOver.slice(count);
+      return returner;
+    },
+    resetAfterLine: function () {
+      leftOver.length = 0;
+    },
+    end: function () {
+      if (i !== data.length) {
+        throw new Error("extra data found");
+      }
+    },
+  };
+}
+
+function mapImage8Bit(image, pxData, getPxPos, bpp, data, rawPos) {
+  // eslint-disable-line max-params
+  let imageWidth = image.width;
+  let imageHeight = image.height;
+  let imagePass = image.index;
+  for (let y = 0; y < imageHeight; y++) {
+    for (let x = 0; x < imageWidth; x++) {
+      let pxPos = getPxPos(x, y, imagePass);
+      pixelBppMapper[bpp](pxData, data, pxPos, rawPos);
+      rawPos += bpp; //eslint-disable-line no-param-reassign
+    }
+  }
+  return rawPos;
+}
+
+function mapImageCustomBit(image, pxData, getPxPos, bpp, bits, maxBit) {
+  // eslint-disable-line max-params
+  let imageWidth = image.width;
+  let imageHeight = image.height;
+  let imagePass = image.index;
+  for (let y = 0; y < imageHeight; y++) {
+    for (let x = 0; x < imageWidth; x++) {
+      let pixelData = bits.get(bpp);
+      let pxPos = getPxPos(x, y, imagePass);
+      pixelBppCustomMapper[bpp](pxData, pixelData, pxPos, maxBit);
+    }
+    bits.resetAfterLine();
+  }
+}
+
+exports.dataToBitMap = function (data, bitmapInfo) {
+  let width = bitmapInfo.width;
+  let height = bitmapInfo.height;
+  let depth = bitmapInfo.depth;
+  let bpp = bitmapInfo.bpp;
+  let interlace = bitmapInfo.interlace;
+  let bits;
+
+  if (depth !== 8) {
+    bits = bitRetriever(data, depth);
+  }
+  let pxData;
+  if (depth <= 8) {
+    pxData = Buffer.alloc(width * height * 4);
+  } else {
+    pxData = new Uint16Array(width * height * 4);
+  }
+  let maxBit = Math.pow(2, depth) - 1;
+  let rawPos = 0;
+  let images;
+  let getPxPos;
+
+  if (interlace) {
+    images = interlaceUtils.getImagePasses(width, height);
+    getPxPos = interlaceUtils.getInterlaceIterator(width, height);
+  } else {
+    let nonInterlacedPxPos = 0;
+    getPxPos = function () {
+      let returner = nonInterlacedPxPos;
+      nonInterlacedPxPos += 4;
+      return returner;
+    };
+    images = [{ width: width, height: height }];
+  }
+
+  for (let imageIndex = 0; imageIndex < images.length; imageIndex++) {
+    if (depth === 8) {
+      rawPos = mapImage8Bit(
+        images[imageIndex],
+        pxData,
+        getPxPos,
+        bpp,
+        data,
+        rawPos
+      );
+    } else {
+      mapImageCustomBit(
+        images[imageIndex],
+        pxData,
+        getPxPos,
+        bpp,
+        bits,
+        maxBit
+      );
+    }
+  }
+  if (depth === 8) {
+    if (rawPos !== data.length) {
+      throw new Error("extra data found");
+    }
+  } else {
+    bits.end();
+  }
+
+  return pxData;
+};
+
+
+/***/ }),
+
+/***/ 9889:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let constants = __nccwpck_require__(1929);
+
+module.exports = function (dataIn, width, height, options) {
+  let outHasAlpha =
+    [constants.COLORTYPE_COLOR_ALPHA, constants.COLORTYPE_ALPHA].indexOf(
+      options.colorType
+    ) !== -1;
+  if (options.colorType === options.inputColorType) {
+    let bigEndian = (function () {
+      let buffer = new ArrayBuffer(2);
+      new DataView(buffer).setInt16(0, 256, true /* littleEndian */);
+      // Int16Array uses the platform's endianness.
+      return new Int16Array(buffer)[0] !== 256;
+    })();
+    // If no need to convert to grayscale and alpha is present/absent in both, take a fast route
+    if (options.bitDepth === 8 || (options.bitDepth === 16 && bigEndian)) {
+      return dataIn;
+    }
+  }
+
+  // map to a UInt16 array if data is 16bit, fix endianness below
+  let data = options.bitDepth !== 16 ? dataIn : new Uint16Array(dataIn.buffer);
+
+  let maxValue = 255;
+  let inBpp = constants.COLORTYPE_TO_BPP_MAP[options.inputColorType];
+  if (inBpp === 4 && !options.inputHasAlpha) {
+    inBpp = 3;
+  }
+  let outBpp = constants.COLORTYPE_TO_BPP_MAP[options.colorType];
+  if (options.bitDepth === 16) {
+    maxValue = 65535;
+    outBpp *= 2;
+  }
+  let outData = Buffer.alloc(width * height * outBpp);
+
+  let inIndex = 0;
+  let outIndex = 0;
+
+  let bgColor = options.bgColor || {};
+  if (bgColor.red === undefined) {
+    bgColor.red = maxValue;
+  }
+  if (bgColor.green === undefined) {
+    bgColor.green = maxValue;
+  }
+  if (bgColor.blue === undefined) {
+    bgColor.blue = maxValue;
+  }
+
+  function getRGBA() {
+    let red;
+    let green;
+    let blue;
+    let alpha = maxValue;
+    switch (options.inputColorType) {
+      case constants.COLORTYPE_COLOR_ALPHA:
+        alpha = data[inIndex + 3];
+        red = data[inIndex];
+        green = data[inIndex + 1];
+        blue = data[inIndex + 2];
+        break;
+      case constants.COLORTYPE_COLOR:
+        red = data[inIndex];
+        green = data[inIndex + 1];
+        blue = data[inIndex + 2];
+        break;
+      case constants.COLORTYPE_ALPHA:
+        alpha = data[inIndex + 1];
+        red = data[inIndex];
+        green = red;
+        blue = red;
+        break;
+      case constants.COLORTYPE_GRAYSCALE:
+        red = data[inIndex];
+        green = red;
+        blue = red;
+        break;
+      default:
+        throw new Error(
+          "input color type:" +
+            options.inputColorType +
+            " is not supported at present"
+        );
+    }
+
+    if (options.inputHasAlpha) {
+      if (!outHasAlpha) {
+        alpha /= maxValue;
+        red = Math.min(
+          Math.max(Math.round((1 - alpha) * bgColor.red + alpha * red), 0),
+          maxValue
+        );
+        green = Math.min(
+          Math.max(Math.round((1 - alpha) * bgColor.green + alpha * green), 0),
+          maxValue
+        );
+        blue = Math.min(
+          Math.max(Math.round((1 - alpha) * bgColor.blue + alpha * blue), 0),
+          maxValue
+        );
+      }
+    }
+    return { red: red, green: green, blue: blue, alpha: alpha };
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let rgba = getRGBA(data, inIndex);
+
+      switch (options.colorType) {
+        case constants.COLORTYPE_COLOR_ALPHA:
+        case constants.COLORTYPE_COLOR:
+          if (options.bitDepth === 8) {
+            outData[outIndex] = rgba.red;
+            outData[outIndex + 1] = rgba.green;
+            outData[outIndex + 2] = rgba.blue;
+            if (outHasAlpha) {
+              outData[outIndex + 3] = rgba.alpha;
+            }
+          } else {
+            outData.writeUInt16BE(rgba.red, outIndex);
+            outData.writeUInt16BE(rgba.green, outIndex + 2);
+            outData.writeUInt16BE(rgba.blue, outIndex + 4);
+            if (outHasAlpha) {
+              outData.writeUInt16BE(rgba.alpha, outIndex + 6);
+            }
+          }
+          break;
+        case constants.COLORTYPE_ALPHA:
+        case constants.COLORTYPE_GRAYSCALE: {
+          // Convert to grayscale and alpha
+          let grayscale = (rgba.red + rgba.green + rgba.blue) / 3;
+          if (options.bitDepth === 8) {
+            outData[outIndex] = grayscale;
+            if (outHasAlpha) {
+              outData[outIndex + 1] = rgba.alpha;
+            }
+          } else {
+            outData.writeUInt16BE(grayscale, outIndex);
+            if (outHasAlpha) {
+              outData.writeUInt16BE(rgba.alpha, outIndex + 2);
+            }
+          }
+          break;
+        }
+        default:
+          throw new Error("unrecognised color Type " + options.colorType);
+      }
+
+      inIndex += inBpp;
+      outIndex += outBpp;
+    }
+  }
+
+  return outData;
+};
+
+
+/***/ }),
+
+/***/ 4369:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let util = __nccwpck_require__(9023);
+let Stream = __nccwpck_require__(2203);
+
+let ChunkStream = (module.exports = function () {
+  Stream.call(this);
+
+  this._buffers = [];
+  this._buffered = 0;
+
+  this._reads = [];
+  this._paused = false;
+
+  this._encoding = "utf8";
+  this.writable = true;
+});
+util.inherits(ChunkStream, Stream);
+
+ChunkStream.prototype.read = function (length, callback) {
+  this._reads.push({
+    length: Math.abs(length), // if length < 0 then at most this length
+    allowLess: length < 0,
+    func: callback,
+  });
+
+  process.nextTick(
+    function () {
+      this._process();
+
+      // its paused and there is not enought data then ask for more
+      if (this._paused && this._reads && this._reads.length > 0) {
+        this._paused = false;
+
+        this.emit("drain");
+      }
+    }.bind(this)
+  );
+};
+
+ChunkStream.prototype.write = function (data, encoding) {
+  if (!this.writable) {
+    this.emit("error", new Error("Stream not writable"));
+    return false;
+  }
+
+  let dataBuffer;
+  if (Buffer.isBuffer(data)) {
+    dataBuffer = data;
+  } else {
+    dataBuffer = Buffer.from(data, encoding || this._encoding);
+  }
+
+  this._buffers.push(dataBuffer);
+  this._buffered += dataBuffer.length;
+
+  this._process();
+
+  // ok if there are no more read requests
+  if (this._reads && this._reads.length === 0) {
+    this._paused = true;
+  }
+
+  return this.writable && !this._paused;
+};
+
+ChunkStream.prototype.end = function (data, encoding) {
+  if (data) {
+    this.write(data, encoding);
+  }
+
+  this.writable = false;
+
+  // already destroyed
+  if (!this._buffers) {
+    return;
+  }
+
+  // enqueue or handle end
+  if (this._buffers.length === 0) {
+    this._end();
+  } else {
+    this._buffers.push(null);
+    this._process();
+  }
+};
+
+ChunkStream.prototype.destroySoon = ChunkStream.prototype.end;
+
+ChunkStream.prototype._end = function () {
+  if (this._reads.length > 0) {
+    this.emit("error", new Error("Unexpected end of input"));
+  }
+
+  this.destroy();
+};
+
+ChunkStream.prototype.destroy = function () {
+  if (!this._buffers) {
+    return;
+  }
+
+  this.writable = false;
+  this._reads = null;
+  this._buffers = null;
+
+  this.emit("close");
+};
+
+ChunkStream.prototype._processReadAllowingLess = function (read) {
+  // ok there is any data so that we can satisfy this request
+  this._reads.shift(); // == read
+
+  // first we need to peek into first buffer
+  let smallerBuf = this._buffers[0];
+
+  // ok there is more data than we need
+  if (smallerBuf.length > read.length) {
+    this._buffered -= read.length;
+    this._buffers[0] = smallerBuf.slice(read.length);
+
+    read.func.call(this, smallerBuf.slice(0, read.length));
+  } else {
+    // ok this is less than maximum length so use it all
+    this._buffered -= smallerBuf.length;
+    this._buffers.shift(); // == smallerBuf
+
+    read.func.call(this, smallerBuf);
+  }
+};
+
+ChunkStream.prototype._processRead = function (read) {
+  this._reads.shift(); // == read
+
+  let pos = 0;
+  let count = 0;
+  let data = Buffer.alloc(read.length);
+
+  // create buffer for all data
+  while (pos < read.length) {
+    let buf = this._buffers[count++];
+    let len = Math.min(buf.length, read.length - pos);
+
+    buf.copy(data, pos, 0, len);
+    pos += len;
+
+    // last buffer wasn't used all so just slice it and leave
+    if (len !== buf.length) {
+      this._buffers[--count] = buf.slice(len);
+    }
+  }
+
+  // remove all used buffers
+  if (count > 0) {
+    this._buffers.splice(0, count);
+  }
+
+  this._buffered -= read.length;
+
+  read.func.call(this, data);
+};
+
+ChunkStream.prototype._process = function () {
+  try {
+    // as long as there is any data and read requests
+    while (this._buffered > 0 && this._reads && this._reads.length > 0) {
+      let read = this._reads[0];
+
+      // read any data (but no more than length)
+      if (read.allowLess) {
+        this._processReadAllowingLess(read);
+      } else if (this._buffered >= read.length) {
+        // ok we can meet some expectations
+
+        this._processRead(read);
+      } else {
+        // not enought data to satisfy first request in queue
+        // so we need to wait for more
+        break;
+      }
+    }
+
+    if (this._buffers && !this.writable) {
+      this._end();
+    }
+  } catch (ex) {
+    this.emit("error", ex);
+  }
+};
+
+
+/***/ }),
+
+/***/ 1929:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = {
+  PNG_SIGNATURE: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+
+  TYPE_IHDR: 0x49484452,
+  TYPE_IEND: 0x49454e44,
+  TYPE_IDAT: 0x49444154,
+  TYPE_PLTE: 0x504c5445,
+  TYPE_tRNS: 0x74524e53, // eslint-disable-line camelcase
+  TYPE_gAMA: 0x67414d41, // eslint-disable-line camelcase
+
+  // color-type bits
+  COLORTYPE_GRAYSCALE: 0,
+  COLORTYPE_PALETTE: 1,
+  COLORTYPE_COLOR: 2,
+  COLORTYPE_ALPHA: 4, // e.g. grayscale and alpha
+
+  // color-type combinations
+  COLORTYPE_PALETTE_COLOR: 3,
+  COLORTYPE_COLOR_ALPHA: 6,
+
+  COLORTYPE_TO_BPP_MAP: {
+    0: 1,
+    2: 3,
+    3: 1,
+    4: 2,
+    6: 4,
+  },
+
+  GAMMA_DIVISION: 100000,
+};
+
+
+/***/ }),
+
+/***/ 2918:
+/***/ ((module) => {
+
+"use strict";
+
+
+let crcTable = [];
+
+(function () {
+  for (let i = 0; i < 256; i++) {
+    let currentCrc = i;
+    for (let j = 0; j < 8; j++) {
+      if (currentCrc & 1) {
+        currentCrc = 0xedb88320 ^ (currentCrc >>> 1);
+      } else {
+        currentCrc = currentCrc >>> 1;
+      }
+    }
+    crcTable[i] = currentCrc;
+  }
+})();
+
+let CrcCalculator = (module.exports = function () {
+  this._crc = -1;
+});
+
+CrcCalculator.prototype.write = function (data) {
+  for (let i = 0; i < data.length; i++) {
+    this._crc = crcTable[(this._crc ^ data[i]) & 0xff] ^ (this._crc >>> 8);
+  }
+  return true;
+};
+
+CrcCalculator.prototype.crc32 = function () {
+  return this._crc ^ -1;
+};
+
+CrcCalculator.crc32 = function (buf) {
+  let crc = -1;
+  for (let i = 0; i < buf.length; i++) {
+    crc = crcTable[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return crc ^ -1;
+};
+
+
+/***/ }),
+
+/***/ 8696:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let paethPredictor = __nccwpck_require__(9635);
+
+function filterNone(pxData, pxPos, byteWidth, rawData, rawPos) {
+  for (let x = 0; x < byteWidth; x++) {
+    rawData[rawPos + x] = pxData[pxPos + x];
+  }
+}
+
+function filterSumNone(pxData, pxPos, byteWidth) {
+  let sum = 0;
+  let length = pxPos + byteWidth;
+
+  for (let i = pxPos; i < length; i++) {
+    sum += Math.abs(pxData[i]);
+  }
+  return sum;
+}
+
+function filterSub(pxData, pxPos, byteWidth, rawData, rawPos, bpp) {
+  for (let x = 0; x < byteWidth; x++) {
+    let left = x >= bpp ? pxData[pxPos + x - bpp] : 0;
+    let val = pxData[pxPos + x] - left;
+
+    rawData[rawPos + x] = val;
+  }
+}
+
+function filterSumSub(pxData, pxPos, byteWidth, bpp) {
+  let sum = 0;
+  for (let x = 0; x < byteWidth; x++) {
+    let left = x >= bpp ? pxData[pxPos + x - bpp] : 0;
+    let val = pxData[pxPos + x] - left;
+
+    sum += Math.abs(val);
+  }
+
+  return sum;
+}
+
+function filterUp(pxData, pxPos, byteWidth, rawData, rawPos) {
+  for (let x = 0; x < byteWidth; x++) {
+    let up = pxPos > 0 ? pxData[pxPos + x - byteWidth] : 0;
+    let val = pxData[pxPos + x] - up;
+
+    rawData[rawPos + x] = val;
+  }
+}
+
+function filterSumUp(pxData, pxPos, byteWidth) {
+  let sum = 0;
+  let length = pxPos + byteWidth;
+  for (let x = pxPos; x < length; x++) {
+    let up = pxPos > 0 ? pxData[x - byteWidth] : 0;
+    let val = pxData[x] - up;
+
+    sum += Math.abs(val);
+  }
+
+  return sum;
+}
+
+function filterAvg(pxData, pxPos, byteWidth, rawData, rawPos, bpp) {
+  for (let x = 0; x < byteWidth; x++) {
+    let left = x >= bpp ? pxData[pxPos + x - bpp] : 0;
+    let up = pxPos > 0 ? pxData[pxPos + x - byteWidth] : 0;
+    let val = pxData[pxPos + x] - ((left + up) >> 1);
+
+    rawData[rawPos + x] = val;
+  }
+}
+
+function filterSumAvg(pxData, pxPos, byteWidth, bpp) {
+  let sum = 0;
+  for (let x = 0; x < byteWidth; x++) {
+    let left = x >= bpp ? pxData[pxPos + x - bpp] : 0;
+    let up = pxPos > 0 ? pxData[pxPos + x - byteWidth] : 0;
+    let val = pxData[pxPos + x] - ((left + up) >> 1);
+
+    sum += Math.abs(val);
+  }
+
+  return sum;
+}
+
+function filterPaeth(pxData, pxPos, byteWidth, rawData, rawPos, bpp) {
+  for (let x = 0; x < byteWidth; x++) {
+    let left = x >= bpp ? pxData[pxPos + x - bpp] : 0;
+    let up = pxPos > 0 ? pxData[pxPos + x - byteWidth] : 0;
+    let upleft =
+      pxPos > 0 && x >= bpp ? pxData[pxPos + x - (byteWidth + bpp)] : 0;
+    let val = pxData[pxPos + x] - paethPredictor(left, up, upleft);
+
+    rawData[rawPos + x] = val;
+  }
+}
+
+function filterSumPaeth(pxData, pxPos, byteWidth, bpp) {
+  let sum = 0;
+  for (let x = 0; x < byteWidth; x++) {
+    let left = x >= bpp ? pxData[pxPos + x - bpp] : 0;
+    let up = pxPos > 0 ? pxData[pxPos + x - byteWidth] : 0;
+    let upleft =
+      pxPos > 0 && x >= bpp ? pxData[pxPos + x - (byteWidth + bpp)] : 0;
+    let val = pxData[pxPos + x] - paethPredictor(left, up, upleft);
+
+    sum += Math.abs(val);
+  }
+
+  return sum;
+}
+
+let filters = {
+  0: filterNone,
+  1: filterSub,
+  2: filterUp,
+  3: filterAvg,
+  4: filterPaeth,
+};
+
+let filterSums = {
+  0: filterSumNone,
+  1: filterSumSub,
+  2: filterSumUp,
+  3: filterSumAvg,
+  4: filterSumPaeth,
+};
+
+module.exports = function (pxData, width, height, options, bpp) {
+  let filterTypes;
+  if (!("filterType" in options) || options.filterType === -1) {
+    filterTypes = [0, 1, 2, 3, 4];
+  } else if (typeof options.filterType === "number") {
+    filterTypes = [options.filterType];
+  } else {
+    throw new Error("unrecognised filter types");
+  }
+
+  if (options.bitDepth === 16) {
+    bpp *= 2;
+  }
+  let byteWidth = width * bpp;
+  let rawPos = 0;
+  let pxPos = 0;
+  let rawData = Buffer.alloc((byteWidth + 1) * height);
+
+  let sel = filterTypes[0];
+
+  for (let y = 0; y < height; y++) {
+    if (filterTypes.length > 1) {
+      // find best filter for this line (with lowest sum of values)
+      let min = Infinity;
+
+      for (let i = 0; i < filterTypes.length; i++) {
+        let sum = filterSums[filterTypes[i]](pxData, pxPos, byteWidth, bpp);
+        if (sum < min) {
+          sel = filterTypes[i];
+          min = sum;
+        }
+      }
+    }
+
+    rawData[rawPos] = sel;
+    rawPos++;
+    filters[sel](pxData, pxPos, byteWidth, rawData, rawPos, bpp);
+    rawPos += byteWidth;
+    pxPos += byteWidth;
+  }
+  return rawData;
+};
+
+
+/***/ }),
+
+/***/ 8539:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let util = __nccwpck_require__(9023);
+let ChunkStream = __nccwpck_require__(4369);
+let Filter = __nccwpck_require__(673);
+
+let FilterAsync = (module.exports = function (bitmapInfo) {
+  ChunkStream.call(this);
+
+  let buffers = [];
+  let that = this;
+  this._filter = new Filter(bitmapInfo, {
+    read: this.read.bind(this),
+    write: function (buffer) {
+      buffers.push(buffer);
+    },
+    complete: function () {
+      that.emit("complete", Buffer.concat(buffers));
+    },
+  });
+
+  this._filter.start();
+});
+util.inherits(FilterAsync, ChunkStream);
+
+
+/***/ }),
+
+/***/ 8056:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let SyncReader = __nccwpck_require__(8613);
+let Filter = __nccwpck_require__(673);
+
+exports.process = function (inBuffer, bitmapInfo) {
+  let outBuffers = [];
+  let reader = new SyncReader(inBuffer);
+  let filter = new Filter(bitmapInfo, {
+    read: reader.read.bind(reader),
+    write: function (bufferPart) {
+      outBuffers.push(bufferPart);
+    },
+    complete: function () {},
+  });
+
+  filter.start();
+  reader.process();
+
+  return Buffer.concat(outBuffers);
+};
+
+
+/***/ }),
+
+/***/ 673:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let interlaceUtils = __nccwpck_require__(2689);
+let paethPredictor = __nccwpck_require__(9635);
+
+function getByteWidth(width, bpp, depth) {
+  let byteWidth = width * bpp;
+  if (depth !== 8) {
+    byteWidth = Math.ceil(byteWidth / (8 / depth));
+  }
+  return byteWidth;
+}
+
+let Filter = (module.exports = function (bitmapInfo, dependencies) {
+  let width = bitmapInfo.width;
+  let height = bitmapInfo.height;
+  let interlace = bitmapInfo.interlace;
+  let bpp = bitmapInfo.bpp;
+  let depth = bitmapInfo.depth;
+
+  this.read = dependencies.read;
+  this.write = dependencies.write;
+  this.complete = dependencies.complete;
+
+  this._imageIndex = 0;
+  this._images = [];
+  if (interlace) {
+    let passes = interlaceUtils.getImagePasses(width, height);
+    for (let i = 0; i < passes.length; i++) {
+      this._images.push({
+        byteWidth: getByteWidth(passes[i].width, bpp, depth),
+        height: passes[i].height,
+        lineIndex: 0,
+      });
+    }
+  } else {
+    this._images.push({
+      byteWidth: getByteWidth(width, bpp, depth),
+      height: height,
+      lineIndex: 0,
+    });
+  }
+
+  // when filtering the line we look at the pixel to the left
+  // the spec also says it is done on a byte level regardless of the number of pixels
+  // so if the depth is byte compatible (8 or 16) we subtract the bpp in order to compare back
+  // a pixel rather than just a different byte part. However if we are sub byte, we ignore.
+  if (depth === 8) {
+    this._xComparison = bpp;
+  } else if (depth === 16) {
+    this._xComparison = bpp * 2;
+  } else {
+    this._xComparison = 1;
+  }
+});
+
+Filter.prototype.start = function () {
+  this.read(
+    this._images[this._imageIndex].byteWidth + 1,
+    this._reverseFilterLine.bind(this)
+  );
+};
+
+Filter.prototype._unFilterType1 = function (
+  rawData,
+  unfilteredLine,
+  byteWidth
+) {
+  let xComparison = this._xComparison;
+  let xBiggerThan = xComparison - 1;
+
+  for (let x = 0; x < byteWidth; x++) {
+    let rawByte = rawData[1 + x];
+    let f1Left = x > xBiggerThan ? unfilteredLine[x - xComparison] : 0;
+    unfilteredLine[x] = rawByte + f1Left;
+  }
+};
+
+Filter.prototype._unFilterType2 = function (
+  rawData,
+  unfilteredLine,
+  byteWidth
+) {
+  let lastLine = this._lastLine;
+
+  for (let x = 0; x < byteWidth; x++) {
+    let rawByte = rawData[1 + x];
+    let f2Up = lastLine ? lastLine[x] : 0;
+    unfilteredLine[x] = rawByte + f2Up;
+  }
+};
+
+Filter.prototype._unFilterType3 = function (
+  rawData,
+  unfilteredLine,
+  byteWidth
+) {
+  let xComparison = this._xComparison;
+  let xBiggerThan = xComparison - 1;
+  let lastLine = this._lastLine;
+
+  for (let x = 0; x < byteWidth; x++) {
+    let rawByte = rawData[1 + x];
+    let f3Up = lastLine ? lastLine[x] : 0;
+    let f3Left = x > xBiggerThan ? unfilteredLine[x - xComparison] : 0;
+    let f3Add = Math.floor((f3Left + f3Up) / 2);
+    unfilteredLine[x] = rawByte + f3Add;
+  }
+};
+
+Filter.prototype._unFilterType4 = function (
+  rawData,
+  unfilteredLine,
+  byteWidth
+) {
+  let xComparison = this._xComparison;
+  let xBiggerThan = xComparison - 1;
+  let lastLine = this._lastLine;
+
+  for (let x = 0; x < byteWidth; x++) {
+    let rawByte = rawData[1 + x];
+    let f4Up = lastLine ? lastLine[x] : 0;
+    let f4Left = x > xBiggerThan ? unfilteredLine[x - xComparison] : 0;
+    let f4UpLeft = x > xBiggerThan && lastLine ? lastLine[x - xComparison] : 0;
+    let f4Add = paethPredictor(f4Left, f4Up, f4UpLeft);
+    unfilteredLine[x] = rawByte + f4Add;
+  }
+};
+
+Filter.prototype._reverseFilterLine = function (rawData) {
+  let filter = rawData[0];
+  let unfilteredLine;
+  let currentImage = this._images[this._imageIndex];
+  let byteWidth = currentImage.byteWidth;
+
+  if (filter === 0) {
+    unfilteredLine = rawData.slice(1, byteWidth + 1);
+  } else {
+    unfilteredLine = Buffer.alloc(byteWidth);
+
+    switch (filter) {
+      case 1:
+        this._unFilterType1(rawData, unfilteredLine, byteWidth);
+        break;
+      case 2:
+        this._unFilterType2(rawData, unfilteredLine, byteWidth);
+        break;
+      case 3:
+        this._unFilterType3(rawData, unfilteredLine, byteWidth);
+        break;
+      case 4:
+        this._unFilterType4(rawData, unfilteredLine, byteWidth);
+        break;
+      default:
+        throw new Error("Unrecognised filter type - " + filter);
+    }
+  }
+
+  this.write(unfilteredLine);
+
+  currentImage.lineIndex++;
+  if (currentImage.lineIndex >= currentImage.height) {
+    this._lastLine = null;
+    this._imageIndex++;
+    currentImage = this._images[this._imageIndex];
+  } else {
+    this._lastLine = unfilteredLine;
+  }
+
+  if (currentImage) {
+    // read, using the byte width that may be from the new current image
+    this.read(currentImage.byteWidth + 1, this._reverseFilterLine.bind(this));
+  } else {
+    this._lastLine = null;
+    this.complete();
+  }
+};
+
+
+/***/ }),
+
+/***/ 998:
+/***/ ((module) => {
+
+"use strict";
+
+
+function dePalette(indata, outdata, width, height, palette) {
+  let pxPos = 0;
+  // use values from palette
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let color = palette[indata[pxPos]];
+
+      if (!color) {
+        throw new Error("index " + indata[pxPos] + " not in palette");
+      }
+
+      for (let i = 0; i < 4; i++) {
+        outdata[pxPos + i] = color[i];
+      }
+      pxPos += 4;
+    }
+  }
+}
+
+function replaceTransparentColor(indata, outdata, width, height, transColor) {
+  let pxPos = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let makeTrans = false;
+
+      if (transColor.length === 1) {
+        if (transColor[0] === indata[pxPos]) {
+          makeTrans = true;
+        }
+      } else if (
+        transColor[0] === indata[pxPos] &&
+        transColor[1] === indata[pxPos + 1] &&
+        transColor[2] === indata[pxPos + 2]
+      ) {
+        makeTrans = true;
+      }
+      if (makeTrans) {
+        for (let i = 0; i < 4; i++) {
+          outdata[pxPos + i] = 0;
+        }
+      }
+      pxPos += 4;
+    }
+  }
+}
+
+function scaleDepth(indata, outdata, width, height, depth) {
+  let maxOutSample = 255;
+  let maxInSample = Math.pow(2, depth) - 1;
+  let pxPos = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      for (let i = 0; i < 4; i++) {
+        outdata[pxPos + i] = Math.floor(
+          (indata[pxPos + i] * maxOutSample) / maxInSample + 0.5
+        );
+      }
+      pxPos += 4;
+    }
+  }
+}
+
+module.exports = function (indata, imageData, skipRescale = false) {
+  let depth = imageData.depth;
+  let width = imageData.width;
+  let height = imageData.height;
+  let colorType = imageData.colorType;
+  let transColor = imageData.transColor;
+  let palette = imageData.palette;
+
+  let outdata = indata; // only different for 16 bits
+
+  if (colorType === 3) {
+    // paletted
+    dePalette(indata, outdata, width, height, palette);
+  } else {
+    if (transColor) {
+      replaceTransparentColor(indata, outdata, width, height, transColor);
+    }
+    // if it needs scaling
+    if (depth !== 8 && !skipRescale) {
+      // if we need to change the buffer size
+      if (depth === 16) {
+        outdata = Buffer.alloc(width * height * 4);
+      }
+      scaleDepth(indata, outdata, width, height, depth);
+    }
+  }
+  return outdata;
+};
+
+
+/***/ }),
+
+/***/ 2689:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+
+// Adam 7
+//   0 1 2 3 4 5 6 7
+// 0 x 6 4 6 x 6 4 6
+// 1 7 7 7 7 7 7 7 7
+// 2 5 6 5 6 5 6 5 6
+// 3 7 7 7 7 7 7 7 7
+// 4 3 6 4 6 3 6 4 6
+// 5 7 7 7 7 7 7 7 7
+// 6 5 6 5 6 5 6 5 6
+// 7 7 7 7 7 7 7 7 7
+
+let imagePasses = [
+  {
+    // pass 1 - 1px
+    x: [0],
+    y: [0],
+  },
+  {
+    // pass 2 - 1px
+    x: [4],
+    y: [0],
+  },
+  {
+    // pass 3 - 2px
+    x: [0, 4],
+    y: [4],
+  },
+  {
+    // pass 4 - 4px
+    x: [2, 6],
+    y: [0, 4],
+  },
+  {
+    // pass 5 - 8px
+    x: [0, 2, 4, 6],
+    y: [2, 6],
+  },
+  {
+    // pass 6 - 16px
+    x: [1, 3, 5, 7],
+    y: [0, 2, 4, 6],
+  },
+  {
+    // pass 7 - 32px
+    x: [0, 1, 2, 3, 4, 5, 6, 7],
+    y: [1, 3, 5, 7],
+  },
+];
+
+exports.getImagePasses = function (width, height) {
+  let images = [];
+  let xLeftOver = width % 8;
+  let yLeftOver = height % 8;
+  let xRepeats = (width - xLeftOver) / 8;
+  let yRepeats = (height - yLeftOver) / 8;
+  for (let i = 0; i < imagePasses.length; i++) {
+    let pass = imagePasses[i];
+    let passWidth = xRepeats * pass.x.length;
+    let passHeight = yRepeats * pass.y.length;
+    for (let j = 0; j < pass.x.length; j++) {
+      if (pass.x[j] < xLeftOver) {
+        passWidth++;
+      } else {
+        break;
+      }
+    }
+    for (let j = 0; j < pass.y.length; j++) {
+      if (pass.y[j] < yLeftOver) {
+        passHeight++;
+      } else {
+        break;
+      }
+    }
+    if (passWidth > 0 && passHeight > 0) {
+      images.push({ width: passWidth, height: passHeight, index: i });
+    }
+  }
+  return images;
+};
+
+exports.getInterlaceIterator = function (width) {
+  return function (x, y, pass) {
+    let outerXLeftOver = x % imagePasses[pass].x.length;
+    let outerX =
+      ((x - outerXLeftOver) / imagePasses[pass].x.length) * 8 +
+      imagePasses[pass].x[outerXLeftOver];
+    let outerYLeftOver = y % imagePasses[pass].y.length;
+    let outerY =
+      ((y - outerYLeftOver) / imagePasses[pass].y.length) * 8 +
+      imagePasses[pass].y[outerYLeftOver];
+    return outerX * 4 + outerY * width * 4;
+  };
+};
+
+
+/***/ }),
+
+/***/ 281:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let util = __nccwpck_require__(9023);
+let Stream = __nccwpck_require__(2203);
+let constants = __nccwpck_require__(1929);
+let Packer = __nccwpck_require__(1736);
+
+let PackerAsync = (module.exports = function (opt) {
+  Stream.call(this);
+
+  let options = opt || {};
+
+  this._packer = new Packer(options);
+  this._deflate = this._packer.createDeflate();
+
+  this.readable = true;
+});
+util.inherits(PackerAsync, Stream);
+
+PackerAsync.prototype.pack = function (data, width, height, gamma) {
+  // Signature
+  this.emit("data", Buffer.from(constants.PNG_SIGNATURE));
+  this.emit("data", this._packer.packIHDR(width, height));
+
+  if (gamma) {
+    this.emit("data", this._packer.packGAMA(gamma));
+  }
+
+  let filteredData = this._packer.filterData(data, width, height);
+
+  // compress it
+  this._deflate.on("error", this.emit.bind(this, "error"));
+
+  this._deflate.on(
+    "data",
+    function (compressedData) {
+      this.emit("data", this._packer.packIDAT(compressedData));
+    }.bind(this)
+  );
+
+  this._deflate.on(
+    "end",
+    function () {
+      this.emit("data", this._packer.packIEND());
+      this.emit("end");
+    }.bind(this)
+  );
+
+  this._deflate.end(filteredData);
+};
+
+
+/***/ }),
+
+/***/ 6181:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let hasSyncZlib = true;
+let zlib = __nccwpck_require__(3106);
+if (!zlib.deflateSync) {
+  hasSyncZlib = false;
+}
+let constants = __nccwpck_require__(1929);
+let Packer = __nccwpck_require__(1736);
+
+module.exports = function (metaData, opt) {
+  if (!hasSyncZlib) {
+    throw new Error(
+      "To use the sync capability of this library in old node versions, please pin pngjs to v2.3.0"
+    );
+  }
+
+  let options = opt || {};
+
+  let packer = new Packer(options);
+
+  let chunks = [];
+
+  // Signature
+  chunks.push(Buffer.from(constants.PNG_SIGNATURE));
+
+  // Header
+  chunks.push(packer.packIHDR(metaData.width, metaData.height));
+
+  if (metaData.gamma) {
+    chunks.push(packer.packGAMA(metaData.gamma));
+  }
+
+  let filteredData = packer.filterData(
+    metaData.data,
+    metaData.width,
+    metaData.height
+  );
+
+  // compress it
+  let compressedData = zlib.deflateSync(
+    filteredData,
+    packer.getDeflateOptions()
+  );
+  filteredData = null;
+
+  if (!compressedData || !compressedData.length) {
+    throw new Error("bad png - invalid compressed data response");
+  }
+  chunks.push(packer.packIDAT(compressedData));
+
+  // End
+  chunks.push(packer.packIEND());
+
+  return Buffer.concat(chunks);
+};
+
+
+/***/ }),
+
+/***/ 1736:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let constants = __nccwpck_require__(1929);
+let CrcStream = __nccwpck_require__(2918);
+let bitPacker = __nccwpck_require__(9889);
+let filter = __nccwpck_require__(8696);
+let zlib = __nccwpck_require__(3106);
+
+let Packer = (module.exports = function (options) {
+  this._options = options;
+
+  options.deflateChunkSize = options.deflateChunkSize || 32 * 1024;
+  options.deflateLevel =
+    options.deflateLevel != null ? options.deflateLevel : 9;
+  options.deflateStrategy =
+    options.deflateStrategy != null ? options.deflateStrategy : 3;
+  options.inputHasAlpha =
+    options.inputHasAlpha != null ? options.inputHasAlpha : true;
+  options.deflateFactory = options.deflateFactory || zlib.createDeflate;
+  options.bitDepth = options.bitDepth || 8;
+  // This is outputColorType
+  options.colorType =
+    typeof options.colorType === "number"
+      ? options.colorType
+      : constants.COLORTYPE_COLOR_ALPHA;
+  options.inputColorType =
+    typeof options.inputColorType === "number"
+      ? options.inputColorType
+      : constants.COLORTYPE_COLOR_ALPHA;
+
+  if (
+    [
+      constants.COLORTYPE_GRAYSCALE,
+      constants.COLORTYPE_COLOR,
+      constants.COLORTYPE_COLOR_ALPHA,
+      constants.COLORTYPE_ALPHA,
+    ].indexOf(options.colorType) === -1
+  ) {
+    throw new Error(
+      "option color type:" + options.colorType + " is not supported at present"
+    );
+  }
+  if (
+    [
+      constants.COLORTYPE_GRAYSCALE,
+      constants.COLORTYPE_COLOR,
+      constants.COLORTYPE_COLOR_ALPHA,
+      constants.COLORTYPE_ALPHA,
+    ].indexOf(options.inputColorType) === -1
+  ) {
+    throw new Error(
+      "option input color type:" +
+        options.inputColorType +
+        " is not supported at present"
+    );
+  }
+  if (options.bitDepth !== 8 && options.bitDepth !== 16) {
+    throw new Error(
+      "option bit depth:" + options.bitDepth + " is not supported at present"
+    );
+  }
+});
+
+Packer.prototype.getDeflateOptions = function () {
+  return {
+    chunkSize: this._options.deflateChunkSize,
+    level: this._options.deflateLevel,
+    strategy: this._options.deflateStrategy,
+  };
+};
+
+Packer.prototype.createDeflate = function () {
+  return this._options.deflateFactory(this.getDeflateOptions());
+};
+
+Packer.prototype.filterData = function (data, width, height) {
+  // convert to correct format for filtering (e.g. right bpp and bit depth)
+  let packedData = bitPacker(data, width, height, this._options);
+
+  // filter pixel data
+  let bpp = constants.COLORTYPE_TO_BPP_MAP[this._options.colorType];
+  let filteredData = filter(packedData, width, height, this._options, bpp);
+  return filteredData;
+};
+
+Packer.prototype._packChunk = function (type, data) {
+  let len = data ? data.length : 0;
+  let buf = Buffer.alloc(len + 12);
+
+  buf.writeUInt32BE(len, 0);
+  buf.writeUInt32BE(type, 4);
+
+  if (data) {
+    data.copy(buf, 8);
+  }
+
+  buf.writeInt32BE(
+    CrcStream.crc32(buf.slice(4, buf.length - 4)),
+    buf.length - 4
+  );
+  return buf;
+};
+
+Packer.prototype.packGAMA = function (gamma) {
+  let buf = Buffer.alloc(4);
+  buf.writeUInt32BE(Math.floor(gamma * constants.GAMMA_DIVISION), 0);
+  return this._packChunk(constants.TYPE_gAMA, buf);
+};
+
+Packer.prototype.packIHDR = function (width, height) {
+  let buf = Buffer.alloc(13);
+  buf.writeUInt32BE(width, 0);
+  buf.writeUInt32BE(height, 4);
+  buf[8] = this._options.bitDepth; // Bit depth
+  buf[9] = this._options.colorType; // colorType
+  buf[10] = 0; // compression
+  buf[11] = 0; // filter
+  buf[12] = 0; // interlace
+
+  return this._packChunk(constants.TYPE_IHDR, buf);
+};
+
+Packer.prototype.packIDAT = function (data) {
+  return this._packChunk(constants.TYPE_IDAT, data);
+};
+
+Packer.prototype.packIEND = function () {
+  return this._packChunk(constants.TYPE_IEND, null);
+};
+
+
+/***/ }),
+
+/***/ 9635:
+/***/ ((module) => {
+
+"use strict";
+
+
+module.exports = function paethPredictor(left, above, upLeft) {
+  let paeth = left + above - upLeft;
+  let pLeft = Math.abs(paeth - left);
+  let pAbove = Math.abs(paeth - above);
+  let pUpLeft = Math.abs(paeth - upLeft);
+
+  if (pLeft <= pAbove && pLeft <= pUpLeft) {
+    return left;
+  }
+  if (pAbove <= pUpLeft) {
+    return above;
+  }
+  return upLeft;
+};
+
+
+/***/ }),
+
+/***/ 7504:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let util = __nccwpck_require__(9023);
+let zlib = __nccwpck_require__(3106);
+let ChunkStream = __nccwpck_require__(4369);
+let FilterAsync = __nccwpck_require__(8539);
+let Parser = __nccwpck_require__(6609);
+let bitmapper = __nccwpck_require__(6106);
+let formatNormaliser = __nccwpck_require__(998);
+
+let ParserAsync = (module.exports = function (options) {
+  ChunkStream.call(this);
+
+  this._parser = new Parser(options, {
+    read: this.read.bind(this),
+    error: this._handleError.bind(this),
+    metadata: this._handleMetaData.bind(this),
+    gamma: this.emit.bind(this, "gamma"),
+    palette: this._handlePalette.bind(this),
+    transColor: this._handleTransColor.bind(this),
+    finished: this._finished.bind(this),
+    inflateData: this._inflateData.bind(this),
+    simpleTransparency: this._simpleTransparency.bind(this),
+    headersFinished: this._headersFinished.bind(this),
+  });
+  this._options = options;
+  this.writable = true;
+
+  this._parser.start();
+});
+util.inherits(ParserAsync, ChunkStream);
+
+ParserAsync.prototype._handleError = function (err) {
+  this.emit("error", err);
+
+  this.writable = false;
+
+  this.destroy();
+
+  if (this._inflate && this._inflate.destroy) {
+    this._inflate.destroy();
+  }
+
+  if (this._filter) {
+    this._filter.destroy();
+    // For backward compatibility with Node 7 and below.
+    // Suppress errors due to _inflate calling write() even after
+    // it's destroy()'ed.
+    this._filter.on("error", function () {});
+  }
+
+  this.errord = true;
+};
+
+ParserAsync.prototype._inflateData = function (data) {
+  if (!this._inflate) {
+    if (this._bitmapInfo.interlace) {
+      this._inflate = zlib.createInflate();
+
+      this._inflate.on("error", this.emit.bind(this, "error"));
+      this._filter.on("complete", this._complete.bind(this));
+
+      this._inflate.pipe(this._filter);
+    } else {
+      let rowSize =
+        ((this._bitmapInfo.width *
+          this._bitmapInfo.bpp *
+          this._bitmapInfo.depth +
+          7) >>
+          3) +
+        1;
+      let imageSize = rowSize * this._bitmapInfo.height;
+      let chunkSize = Math.max(imageSize, zlib.Z_MIN_CHUNK);
+
+      this._inflate = zlib.createInflate({ chunkSize: chunkSize });
+      let leftToInflate = imageSize;
+
+      let emitError = this.emit.bind(this, "error");
+      this._inflate.on("error", function (err) {
+        if (!leftToInflate) {
+          return;
+        }
+
+        emitError(err);
+      });
+      this._filter.on("complete", this._complete.bind(this));
+
+      let filterWrite = this._filter.write.bind(this._filter);
+      this._inflate.on("data", function (chunk) {
+        if (!leftToInflate) {
+          return;
+        }
+
+        if (chunk.length > leftToInflate) {
+          chunk = chunk.slice(0, leftToInflate);
+        }
+
+        leftToInflate -= chunk.length;
+
+        filterWrite(chunk);
+      });
+
+      this._inflate.on("end", this._filter.end.bind(this._filter));
+    }
+  }
+  this._inflate.write(data);
+};
+
+ParserAsync.prototype._handleMetaData = function (metaData) {
+  this._metaData = metaData;
+  this._bitmapInfo = Object.create(metaData);
+
+  this._filter = new FilterAsync(this._bitmapInfo);
+};
+
+ParserAsync.prototype._handleTransColor = function (transColor) {
+  this._bitmapInfo.transColor = transColor;
+};
+
+ParserAsync.prototype._handlePalette = function (palette) {
+  this._bitmapInfo.palette = palette;
+};
+
+ParserAsync.prototype._simpleTransparency = function () {
+  this._metaData.alpha = true;
+};
+
+ParserAsync.prototype._headersFinished = function () {
+  // Up until this point, we don't know if we have a tRNS chunk (alpha)
+  // so we can't emit metadata any earlier
+  this.emit("metadata", this._metaData);
+};
+
+ParserAsync.prototype._finished = function () {
+  if (this.errord) {
+    return;
+  }
+
+  if (!this._inflate) {
+    this.emit("error", "No Inflate block");
+  } else {
+    // no more data to inflate
+    this._inflate.end();
+  }
+};
+
+ParserAsync.prototype._complete = function (filteredData) {
+  if (this.errord) {
+    return;
+  }
+
+  let normalisedBitmapData;
+
+  try {
+    let bitmapData = bitmapper.dataToBitMap(filteredData, this._bitmapInfo);
+
+    normalisedBitmapData = formatNormaliser(
+      bitmapData,
+      this._bitmapInfo,
+      this._options.skipRescale
+    );
+    bitmapData = null;
+  } catch (ex) {
+    this._handleError(ex);
+    return;
+  }
+
+  this.emit("parsed", normalisedBitmapData);
+};
+
+
+/***/ }),
+
+/***/ 7345:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let hasSyncZlib = true;
+let zlib = __nccwpck_require__(3106);
+let inflateSync = __nccwpck_require__(447);
+if (!zlib.deflateSync) {
+  hasSyncZlib = false;
+}
+let SyncReader = __nccwpck_require__(8613);
+let FilterSync = __nccwpck_require__(8056);
+let Parser = __nccwpck_require__(6609);
+let bitmapper = __nccwpck_require__(6106);
+let formatNormaliser = __nccwpck_require__(998);
+
+module.exports = function (buffer, options) {
+  if (!hasSyncZlib) {
+    throw new Error(
+      "To use the sync capability of this library in old node versions, please pin pngjs to v2.3.0"
+    );
+  }
+
+  let err;
+  function handleError(_err_) {
+    err = _err_;
+  }
+
+  let metaData;
+  function handleMetaData(_metaData_) {
+    metaData = _metaData_;
+  }
+
+  function handleTransColor(transColor) {
+    metaData.transColor = transColor;
+  }
+
+  function handlePalette(palette) {
+    metaData.palette = palette;
+  }
+
+  function handleSimpleTransparency() {
+    metaData.alpha = true;
+  }
+
+  let gamma;
+  function handleGamma(_gamma_) {
+    gamma = _gamma_;
+  }
+
+  let inflateDataList = [];
+  function handleInflateData(inflatedData) {
+    inflateDataList.push(inflatedData);
+  }
+
+  let reader = new SyncReader(buffer);
+
+  let parser = new Parser(options, {
+    read: reader.read.bind(reader),
+    error: handleError,
+    metadata: handleMetaData,
+    gamma: handleGamma,
+    palette: handlePalette,
+    transColor: handleTransColor,
+    inflateData: handleInflateData,
+    simpleTransparency: handleSimpleTransparency,
+  });
+
+  parser.start();
+  reader.process();
+
+  if (err) {
+    throw err;
+  }
+
+  //join together the inflate datas
+  let inflateData = Buffer.concat(inflateDataList);
+  inflateDataList.length = 0;
+
+  let inflatedData;
+  if (metaData.interlace) {
+    inflatedData = zlib.inflateSync(inflateData);
+  } else {
+    let rowSize =
+      ((metaData.width * metaData.bpp * metaData.depth + 7) >> 3) + 1;
+    let imageSize = rowSize * metaData.height;
+    inflatedData = inflateSync(inflateData, {
+      chunkSize: imageSize,
+      maxLength: imageSize,
+    });
+  }
+  inflateData = null;
+
+  if (!inflatedData || !inflatedData.length) {
+    throw new Error("bad png - invalid inflate data response");
+  }
+
+  let unfilteredData = FilterSync.process(inflatedData, metaData);
+  inflateData = null;
+
+  let bitmapData = bitmapper.dataToBitMap(unfilteredData, metaData);
+  unfilteredData = null;
+
+  let normalisedBitmapData = formatNormaliser(
+    bitmapData,
+    metaData,
+    options.skipRescale
+  );
+
+  metaData.data = normalisedBitmapData;
+  metaData.gamma = gamma || 0;
+
+  return metaData;
+};
+
+
+/***/ }),
+
+/***/ 6609:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let constants = __nccwpck_require__(1929);
+let CrcCalculator = __nccwpck_require__(2918);
+
+let Parser = (module.exports = function (options, dependencies) {
+  this._options = options;
+  options.checkCRC = options.checkCRC !== false;
+
+  this._hasIHDR = false;
+  this._hasIEND = false;
+  this._emittedHeadersFinished = false;
+
+  // input flags/metadata
+  this._palette = [];
+  this._colorType = 0;
+
+  this._chunks = {};
+  this._chunks[constants.TYPE_IHDR] = this._handleIHDR.bind(this);
+  this._chunks[constants.TYPE_IEND] = this._handleIEND.bind(this);
+  this._chunks[constants.TYPE_IDAT] = this._handleIDAT.bind(this);
+  this._chunks[constants.TYPE_PLTE] = this._handlePLTE.bind(this);
+  this._chunks[constants.TYPE_tRNS] = this._handleTRNS.bind(this);
+  this._chunks[constants.TYPE_gAMA] = this._handleGAMA.bind(this);
+
+  this.read = dependencies.read;
+  this.error = dependencies.error;
+  this.metadata = dependencies.metadata;
+  this.gamma = dependencies.gamma;
+  this.transColor = dependencies.transColor;
+  this.palette = dependencies.palette;
+  this.parsed = dependencies.parsed;
+  this.inflateData = dependencies.inflateData;
+  this.finished = dependencies.finished;
+  this.simpleTransparency = dependencies.simpleTransparency;
+  this.headersFinished = dependencies.headersFinished || function () {};
+});
+
+Parser.prototype.start = function () {
+  this.read(constants.PNG_SIGNATURE.length, this._parseSignature.bind(this));
+};
+
+Parser.prototype._parseSignature = function (data) {
+  let signature = constants.PNG_SIGNATURE;
+
+  for (let i = 0; i < signature.length; i++) {
+    if (data[i] !== signature[i]) {
+      this.error(new Error("Invalid file signature"));
+      return;
+    }
+  }
+  this.read(8, this._parseChunkBegin.bind(this));
+};
+
+Parser.prototype._parseChunkBegin = function (data) {
+  // chunk content length
+  let length = data.readUInt32BE(0);
+
+  // chunk type
+  let type = data.readUInt32BE(4);
+  let name = "";
+  for (let i = 4; i < 8; i++) {
+    name += String.fromCharCode(data[i]);
+  }
+
+  //console.log('chunk ', name, length);
+
+  // chunk flags
+  let ancillary = Boolean(data[4] & 0x20); // or critical
+  //    priv = Boolean(data[5] & 0x20), // or public
+  //    safeToCopy = Boolean(data[7] & 0x20); // or unsafe
+
+  if (!this._hasIHDR && type !== constants.TYPE_IHDR) {
+    this.error(new Error("Expected IHDR on beggining"));
+    return;
+  }
+
+  this._crc = new CrcCalculator();
+  this._crc.write(Buffer.from(name));
+
+  if (this._chunks[type]) {
+    return this._chunks[type](length);
+  }
+
+  if (!ancillary) {
+    this.error(new Error("Unsupported critical chunk type " + name));
+    return;
+  }
+
+  this.read(length + 4, this._skipChunk.bind(this));
+};
+
+Parser.prototype._skipChunk = function (/*data*/) {
+  this.read(8, this._parseChunkBegin.bind(this));
+};
+
+Parser.prototype._handleChunkEnd = function () {
+  this.read(4, this._parseChunkEnd.bind(this));
+};
+
+Parser.prototype._parseChunkEnd = function (data) {
+  let fileCrc = data.readInt32BE(0);
+  let calcCrc = this._crc.crc32();
+
+  // check CRC
+  if (this._options.checkCRC && calcCrc !== fileCrc) {
+    this.error(new Error("Crc error - " + fileCrc + " - " + calcCrc));
+    return;
+  }
+
+  if (!this._hasIEND) {
+    this.read(8, this._parseChunkBegin.bind(this));
+  }
+};
+
+Parser.prototype._handleIHDR = function (length) {
+  this.read(length, this._parseIHDR.bind(this));
+};
+Parser.prototype._parseIHDR = function (data) {
+  this._crc.write(data);
+
+  let width = data.readUInt32BE(0);
+  let height = data.readUInt32BE(4);
+  let depth = data[8];
+  let colorType = data[9]; // bits: 1 palette, 2 color, 4 alpha
+  let compr = data[10];
+  let filter = data[11];
+  let interlace = data[12];
+
+  // console.log('    width', width, 'height', height,
+  //     'depth', depth, 'colorType', colorType,
+  //     'compr', compr, 'filter', filter, 'interlace', interlace
+  // );
+
+  if (
+    depth !== 8 &&
+    depth !== 4 &&
+    depth !== 2 &&
+    depth !== 1 &&
+    depth !== 16
+  ) {
+    this.error(new Error("Unsupported bit depth " + depth));
+    return;
+  }
+  if (!(colorType in constants.COLORTYPE_TO_BPP_MAP)) {
+    this.error(new Error("Unsupported color type"));
+    return;
+  }
+  if (compr !== 0) {
+    this.error(new Error("Unsupported compression method"));
+    return;
+  }
+  if (filter !== 0) {
+    this.error(new Error("Unsupported filter method"));
+    return;
+  }
+  if (interlace !== 0 && interlace !== 1) {
+    this.error(new Error("Unsupported interlace method"));
+    return;
+  }
+
+  this._colorType = colorType;
+
+  let bpp = constants.COLORTYPE_TO_BPP_MAP[this._colorType];
+
+  this._hasIHDR = true;
+
+  this.metadata({
+    width: width,
+    height: height,
+    depth: depth,
+    interlace: Boolean(interlace),
+    palette: Boolean(colorType & constants.COLORTYPE_PALETTE),
+    color: Boolean(colorType & constants.COLORTYPE_COLOR),
+    alpha: Boolean(colorType & constants.COLORTYPE_ALPHA),
+    bpp: bpp,
+    colorType: colorType,
+  });
+
+  this._handleChunkEnd();
+};
+
+Parser.prototype._handlePLTE = function (length) {
+  this.read(length, this._parsePLTE.bind(this));
+};
+Parser.prototype._parsePLTE = function (data) {
+  this._crc.write(data);
+
+  let entries = Math.floor(data.length / 3);
+  // console.log('Palette:', entries);
+
+  for (let i = 0; i < entries; i++) {
+    this._palette.push([data[i * 3], data[i * 3 + 1], data[i * 3 + 2], 0xff]);
+  }
+
+  this.palette(this._palette);
+
+  this._handleChunkEnd();
+};
+
+Parser.prototype._handleTRNS = function (length) {
+  this.simpleTransparency();
+  this.read(length, this._parseTRNS.bind(this));
+};
+Parser.prototype._parseTRNS = function (data) {
+  this._crc.write(data);
+
+  // palette
+  if (this._colorType === constants.COLORTYPE_PALETTE_COLOR) {
+    if (this._palette.length === 0) {
+      this.error(new Error("Transparency chunk must be after palette"));
+      return;
+    }
+    if (data.length > this._palette.length) {
+      this.error(new Error("More transparent colors than palette size"));
+      return;
+    }
+    for (let i = 0; i < data.length; i++) {
+      this._palette[i][3] = data[i];
+    }
+    this.palette(this._palette);
+  }
+
+  // for colorType 0 (grayscale) and 2 (rgb)
+  // there might be one gray/color defined as transparent
+  if (this._colorType === constants.COLORTYPE_GRAYSCALE) {
+    // grey, 2 bytes
+    this.transColor([data.readUInt16BE(0)]);
+  }
+  if (this._colorType === constants.COLORTYPE_COLOR) {
+    this.transColor([
+      data.readUInt16BE(0),
+      data.readUInt16BE(2),
+      data.readUInt16BE(4),
+    ]);
+  }
+
+  this._handleChunkEnd();
+};
+
+Parser.prototype._handleGAMA = function (length) {
+  this.read(length, this._parseGAMA.bind(this));
+};
+Parser.prototype._parseGAMA = function (data) {
+  this._crc.write(data);
+  this.gamma(data.readUInt32BE(0) / constants.GAMMA_DIVISION);
+
+  this._handleChunkEnd();
+};
+
+Parser.prototype._handleIDAT = function (length) {
+  if (!this._emittedHeadersFinished) {
+    this._emittedHeadersFinished = true;
+    this.headersFinished();
+  }
+  this.read(-length, this._parseIDAT.bind(this, length));
+};
+Parser.prototype._parseIDAT = function (length, data) {
+  this._crc.write(data);
+
+  if (
+    this._colorType === constants.COLORTYPE_PALETTE_COLOR &&
+    this._palette.length === 0
+  ) {
+    throw new Error("Expected palette not found");
+  }
+
+  this.inflateData(data);
+  let leftOverLength = length - data.length;
+
+  if (leftOverLength > 0) {
+    this._handleIDAT(leftOverLength);
+  } else {
+    this._handleChunkEnd();
+  }
+};
+
+Parser.prototype._handleIEND = function (length) {
+  this.read(length, this._parseIEND.bind(this));
+};
+Parser.prototype._parseIEND = function (data) {
+  this._crc.write(data);
+
+  this._hasIEND = true;
+  this._handleChunkEnd();
+
+  if (this.finished) {
+    this.finished();
+  }
+};
+
+
+/***/ }),
+
+/***/ 3647:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let parse = __nccwpck_require__(7345);
+let pack = __nccwpck_require__(6181);
+
+exports.read = function (buffer, options) {
+  return parse(buffer, options || {});
+};
+
+exports.write = function (png, options) {
+  return pack(png, options);
+};
+
+
+/***/ }),
+
+/***/ 359:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let util = __nccwpck_require__(9023);
+let Stream = __nccwpck_require__(2203);
+let Parser = __nccwpck_require__(7504);
+let Packer = __nccwpck_require__(281);
+let PNGSync = __nccwpck_require__(3647);
+
+let PNG = (exports.PNG = function (options) {
+  Stream.call(this);
+
+  options = options || {}; // eslint-disable-line no-param-reassign
+
+  // coerce pixel dimensions to integers (also coerces undefined -> 0):
+  this.width = options.width | 0;
+  this.height = options.height | 0;
+
+  this.data =
+    this.width > 0 && this.height > 0
+      ? Buffer.alloc(4 * this.width * this.height)
+      : null;
+
+  if (options.fill && this.data) {
+    this.data.fill(0);
+  }
+
+  this.gamma = 0;
+  this.readable = this.writable = true;
+
+  this._parser = new Parser(options);
+
+  this._parser.on("error", this.emit.bind(this, "error"));
+  this._parser.on("close", this._handleClose.bind(this));
+  this._parser.on("metadata", this._metadata.bind(this));
+  this._parser.on("gamma", this._gamma.bind(this));
+  this._parser.on(
+    "parsed",
+    function (data) {
+      this.data = data;
+      this.emit("parsed", data);
+    }.bind(this)
+  );
+
+  this._packer = new Packer(options);
+  this._packer.on("data", this.emit.bind(this, "data"));
+  this._packer.on("end", this.emit.bind(this, "end"));
+  this._parser.on("close", this._handleClose.bind(this));
+  this._packer.on("error", this.emit.bind(this, "error"));
+});
+util.inherits(PNG, Stream);
+
+PNG.sync = PNGSync;
+
+PNG.prototype.pack = function () {
+  if (!this.data || !this.data.length) {
+    this.emit("error", "No data provided");
+    return this;
+  }
+
+  process.nextTick(
+    function () {
+      this._packer.pack(this.data, this.width, this.height, this.gamma);
+    }.bind(this)
+  );
+
+  return this;
+};
+
+PNG.prototype.parse = function (data, callback) {
+  if (callback) {
+    let onParsed, onError;
+
+    onParsed = function (parsedData) {
+      this.removeListener("error", onError);
+
+      this.data = parsedData;
+      callback(null, this);
+    }.bind(this);
+
+    onError = function (err) {
+      this.removeListener("parsed", onParsed);
+
+      callback(err, null);
+    }.bind(this);
+
+    this.once("parsed", onParsed);
+    this.once("error", onError);
+  }
+
+  this.end(data);
+  return this;
+};
+
+PNG.prototype.write = function (data) {
+  this._parser.write(data);
+  return true;
+};
+
+PNG.prototype.end = function (data) {
+  this._parser.end(data);
+};
+
+PNG.prototype._metadata = function (metadata) {
+  this.width = metadata.width;
+  this.height = metadata.height;
+
+  this.emit("metadata", metadata);
+};
+
+PNG.prototype._gamma = function (gamma) {
+  this.gamma = gamma;
+};
+
+PNG.prototype._handleClose = function () {
+  if (!this._parser.writable && !this._packer.readable) {
+    this.emit("close");
+  }
+};
+
+PNG.bitblt = function (src, dst, srcX, srcY, width, height, deltaX, deltaY) {
+  // eslint-disable-line max-params
+  // coerce pixel dimensions to integers (also coerces undefined -> 0):
+  /* eslint-disable no-param-reassign */
+  srcX |= 0;
+  srcY |= 0;
+  width |= 0;
+  height |= 0;
+  deltaX |= 0;
+  deltaY |= 0;
+  /* eslint-enable no-param-reassign */
+
+  if (
+    srcX > src.width ||
+    srcY > src.height ||
+    srcX + width > src.width ||
+    srcY + height > src.height
+  ) {
+    throw new Error("bitblt reading outside image");
+  }
+
+  if (
+    deltaX > dst.width ||
+    deltaY > dst.height ||
+    deltaX + width > dst.width ||
+    deltaY + height > dst.height
+  ) {
+    throw new Error("bitblt writing outside image");
+  }
+
+  for (let y = 0; y < height; y++) {
+    src.data.copy(
+      dst.data,
+      ((deltaY + y) * dst.width + deltaX) << 2,
+      ((srcY + y) * src.width + srcX) << 2,
+      ((srcY + y) * src.width + srcX + width) << 2
+    );
+  }
+};
+
+PNG.prototype.bitblt = function (
+  dst,
+  srcX,
+  srcY,
+  width,
+  height,
+  deltaX,
+  deltaY
+) {
+  // eslint-disable-line max-params
+
+  PNG.bitblt(this, dst, srcX, srcY, width, height, deltaX, deltaY);
+  return this;
+};
+
+PNG.adjustGamma = function (src) {
+  if (src.gamma) {
+    for (let y = 0; y < src.height; y++) {
+      for (let x = 0; x < src.width; x++) {
+        let idx = (src.width * y + x) << 2;
+
+        for (let i = 0; i < 3; i++) {
+          let sample = src.data[idx + i] / 255;
+          sample = Math.pow(sample, 1 / 2.2 / src.gamma);
+          src.data[idx + i] = Math.round(sample * 255);
+        }
+      }
+    }
+    src.gamma = 0;
+  }
+};
+
+PNG.prototype.adjustGamma = function () {
+  PNG.adjustGamma(this);
+};
+
+
+/***/ }),
+
+/***/ 447:
+/***/ ((module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+let assert = (__nccwpck_require__(2613).ok);
+let zlib = __nccwpck_require__(3106);
+let util = __nccwpck_require__(9023);
+
+let kMaxLength = (__nccwpck_require__(181).kMaxLength);
+
+function Inflate(opts) {
+  if (!(this instanceof Inflate)) {
+    return new Inflate(opts);
+  }
+
+  if (opts && opts.chunkSize < zlib.Z_MIN_CHUNK) {
+    opts.chunkSize = zlib.Z_MIN_CHUNK;
+  }
+
+  zlib.Inflate.call(this, opts);
+
+  // Node 8 --> 9 compatibility check
+  this._offset = this._offset === undefined ? this._outOffset : this._offset;
+  this._buffer = this._buffer || this._outBuffer;
+
+  if (opts && opts.maxLength != null) {
+    this._maxLength = opts.maxLength;
+  }
+}
+
+function createInflate(opts) {
+  return new Inflate(opts);
+}
+
+function _close(engine, callback) {
+  if (callback) {
+    process.nextTick(callback);
+  }
+
+  // Caller may invoke .close after a zlib error (which will null _handle).
+  if (!engine._handle) {
+    return;
+  }
+
+  engine._handle.close();
+  engine._handle = null;
+}
+
+Inflate.prototype._processChunk = function (chunk, flushFlag, asyncCb) {
+  if (typeof asyncCb === "function") {
+    return zlib.Inflate._processChunk.call(this, chunk, flushFlag, asyncCb);
+  }
+
+  let self = this;
+
+  let availInBefore = chunk && chunk.length;
+  let availOutBefore = this._chunkSize - this._offset;
+  let leftToInflate = this._maxLength;
+  let inOff = 0;
+
+  let buffers = [];
+  let nread = 0;
+
+  let error;
+  this.on("error", function (err) {
+    error = err;
+  });
+
+  function handleChunk(availInAfter, availOutAfter) {
+    if (self._hadError) {
+      return;
+    }
+
+    let have = availOutBefore - availOutAfter;
+    assert(have >= 0, "have should not go down");
+
+    if (have > 0) {
+      let out = self._buffer.slice(self._offset, self._offset + have);
+      self._offset += have;
+
+      if (out.length > leftToInflate) {
+        out = out.slice(0, leftToInflate);
+      }
+
+      buffers.push(out);
+      nread += out.length;
+      leftToInflate -= out.length;
+
+      if (leftToInflate === 0) {
+        return false;
+      }
+    }
+
+    if (availOutAfter === 0 || self._offset >= self._chunkSize) {
+      availOutBefore = self._chunkSize;
+      self._offset = 0;
+      self._buffer = Buffer.allocUnsafe(self._chunkSize);
+    }
+
+    if (availOutAfter === 0) {
+      inOff += availInBefore - availInAfter;
+      availInBefore = availInAfter;
+
+      return true;
+    }
+
+    return false;
+  }
+
+  assert(this._handle, "zlib binding closed");
+  let res;
+  do {
+    res = this._handle.writeSync(
+      flushFlag,
+      chunk, // in
+      inOff, // in_off
+      availInBefore, // in_len
+      this._buffer, // out
+      this._offset, //out_off
+      availOutBefore
+    ); // out_len
+    // Node 8 --> 9 compatibility check
+    res = res || this._writeState;
+  } while (!this._hadError && handleChunk(res[0], res[1]));
+
+  if (this._hadError) {
+    throw error;
+  }
+
+  if (nread >= kMaxLength) {
+    _close(this);
+    throw new RangeError(
+      "Cannot create final Buffer. It would be larger than 0x" +
+        kMaxLength.toString(16) +
+        " bytes"
+    );
+  }
+
+  let buf = Buffer.concat(buffers, nread);
+  _close(this);
+
+  return buf;
+};
+
+util.inherits(Inflate, zlib.Inflate);
+
+function zlibBufferSync(engine, buffer) {
+  if (typeof buffer === "string") {
+    buffer = Buffer.from(buffer);
+  }
+  if (!(buffer instanceof Buffer)) {
+    throw new TypeError("Not a string or buffer");
+  }
+
+  let flushFlag = engine._finishFlushFlag;
+  if (flushFlag == null) {
+    flushFlag = zlib.Z_FINISH;
+  }
+
+  return engine._processChunk(buffer, flushFlag);
+}
+
+function inflateSync(buffer, opts) {
+  return zlibBufferSync(new Inflate(opts), buffer);
+}
+
+module.exports = exports = inflateSync;
+exports.Inflate = Inflate;
+exports.createInflate = createInflate;
+exports.inflateSync = inflateSync;
+
+
+/***/ }),
+
+/***/ 8613:
+/***/ ((module) => {
+
+"use strict";
+
+
+let SyncReader = (module.exports = function (buffer) {
+  this._buffer = buffer;
+  this._reads = [];
+});
+
+SyncReader.prototype.read = function (length, callback) {
+  this._reads.push({
+    length: Math.abs(length), // if length < 0 then at most this length
+    allowLess: length < 0,
+    func: callback,
+  });
+};
+
+SyncReader.prototype.process = function () {
+  // as long as there is any data and read requests
+  while (this._reads.length > 0 && this._buffer.length) {
+    let read = this._reads[0];
+
+    if (
+      this._buffer.length &&
+      (this._buffer.length >= read.length || read.allowLess)
+    ) {
+      // ok there is any data so that we can satisfy this request
+      this._reads.shift(); // == read
+
+      let buf = this._buffer;
+
+      this._buffer = buf.slice(read.length);
+
+      read.func.call(this, buf.slice(0, read.length));
+    } else {
+      break;
+    }
+  }
+
+  if (this._reads.length > 0) {
+    throw new Error("There are some read requests waitng on finished stream");
+  }
+
+  if (this._buffer.length > 0) {
+    throw new Error("unrecognised content at end of stream");
+  }
+};
 
 
 /***/ }),

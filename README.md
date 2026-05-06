@@ -1,13 +1,13 @@
 # update-screenshots-action
 
-A publishable GitHub Action that captures a screenshot of a site, writes it to a repo-relative path, updates a marked block in the root `README.md`, then commits and pushes the change.
+A publishable GitHub Action that captures a site as either a static PNG or an animated GIF, writes it to a repo-relative path, updates a marked block in the root `README.md`, then commits and pushes the change.
 
 ## What It Does
 
 - Opens a caller-provided URL in Chromium via `playwright-core`
-- Captures a PNG screenshot using a fixed viewport
-- Rewrites a marked block in the target README to point at the screenshot path
-- Commits and pushes the changed README and image back to the current branch
+- Captures either a PNG screenshot or an animated GIF using a fixed viewport
+- Rewrites a marked block in the target README to point at the captured asset path
+- Commits and pushes the changed README and asset back to the current branch
 
 If you trigger the workflow from `push` events on `main`, set `target_branch` to a dedicated automation branch so screenshot commits do not keep advancing `main`.
 
@@ -48,9 +48,21 @@ jobs:
         with:
           url: https://example.com
           image_path: assets/screenshots/home.png
+          capture_format: image
           navigation_retries: 5
           navigation_retry_delay_ms: 1000
           target_branch: automation/update-screenshot
+```
+
+GIF capture example:
+
+```yaml
+- uses: Mrchazaaa/update-screenshots-action@v1
+  with:
+    url: https://example.com
+    image_path: assets/screenshots/home.gif
+    capture_format: gif
+    gif_duration_ms: 3000
 ```
 
 ## Inputs
@@ -58,7 +70,8 @@ jobs:
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `url` | Yes |  | URL to open and capture |
-| `image_path` | Yes |  | Repo-relative screenshot output path |
+| `image_path` | Yes |  | Repo-relative output path for the captured asset |
+| `capture_format` | No | `image` | Capture `image` for PNG output or `gif` for animated GIF output |
 | `readme_path` | No | `README.md` | Repo-relative README path |
 | `viewport_width` | No | `1440` | Browser viewport width |
 | `viewport_height` | No | `900` | Browser viewport height |
@@ -66,6 +79,7 @@ jobs:
 | `navigation_retries` | No | `0` | Number of times to retry navigation after the first failure |
 | `navigation_retry_delay_ms` | No | `1000` | Delay between navigation retry attempts |
 | `delay_ms` | No | `0` | Extra wait after navigation |
+| `gif_duration_ms` | No | `1000` | GIF capture duration in milliseconds when `capture_format` is `gif` |
 | `browser_path` | No |  | Explicit browser executable path |
 | `commit_message` | No | `chore: update README screenshot` | Commit message |
 | `git_user_name` | No | `github-actions[bot]` | Git author name |
@@ -79,13 +93,14 @@ jobs:
 | --- | --- |
 | `changed` | `true` if a commit was created |
 | `commit_sha` | Commit SHA when changes were pushed |
-| `image_path` | The repo-relative screenshot path that was written |
+| `image_path` | The repo-relative asset path that was written |
 
 ## Notes
 
 - The action fails if the README markers are missing.
 - By default it looks for Chrome or Chromium in common GitHub-hosted runner locations.
 - The caller workflow must grant `contents: write`.
+- `capture_format` controls whether the action writes a `.png` or `.gif`, and `image_path` must use the matching extension.
 - `navigation_retries` and `navigation_retry_delay_ms` are useful when the target URL is a local preview server that may not be ready on the first request.
 - When using a dedicated `target_branch`, make sure your checkout step fetches that branch or allows creating it on first push.
 

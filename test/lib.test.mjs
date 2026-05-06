@@ -5,10 +5,12 @@ import os from "node:os";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import {
   buildReadmeImageBlock,
+  parseCaptureFormat,
   retry,
   replaceMarkedScreenshotBlock,
   resolveWorkspacePath,
-  updateReadme
+  updateReadme,
+  validateAssetPathForFormat
 } from "../lib/src/lib.js";
 
 test("replaceMarkedScreenshotBlock rewrites only the marked block", () => {
@@ -40,9 +42,40 @@ test("replaceMarkedScreenshotBlock fails when markers are missing", () => {
   assert.throws(() => replaceMarkedScreenshotBlock("# Example", "shot.png"), /missing screenshot markers/i);
 });
 
+test("buildReadmeImageBlock preserves gif paths", () => {
+  assert.equal(
+    buildReadmeImageBlock("assets/screenshots/demo.gif"),
+    ["<!-- screenshot:start -->", "![Project screenshot](assets/screenshots/demo.gif)", "<!-- screenshot:end -->"].join(
+      "\n"
+    )
+  );
+});
+
 test("resolveWorkspacePath rejects absolute and escaping paths", () => {
   assert.throws(() => resolveWorkspacePath("/repo", "/tmp/out.png"), /repo-relative/);
   assert.throws(() => resolveWorkspacePath("/repo", "../out.png"), /within the repository workspace/);
+});
+
+test("parseCaptureFormat accepts supported values", () => {
+  assert.equal(parseCaptureFormat("image"), "image");
+  assert.equal(parseCaptureFormat("gif"), "gif");
+});
+
+test("parseCaptureFormat rejects unsupported values", () => {
+  assert.throws(() => parseCaptureFormat("both"), /capture_format must be one of image, gif/i);
+});
+
+test("validateAssetPathForFormat enforces matching extensions", () => {
+  assert.doesNotThrow(() => validateAssetPathForFormat("assets/screenshots/home.png", "image"));
+  assert.doesNotThrow(() => validateAssetPathForFormat("assets/screenshots/home.gif", "gif"));
+  assert.throws(
+    () => validateAssetPathForFormat("assets/screenshots/home.gif", "image"),
+    /capture_format image requires a \.png output path/i
+  );
+  assert.throws(
+    () => validateAssetPathForFormat("assets/screenshots/home.png", "gif"),
+    /capture_format gif requires a \.gif output path/i
+  );
 });
 
 test("updateReadme reports false when content already matches", async () => {

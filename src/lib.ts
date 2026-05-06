@@ -8,6 +8,7 @@ const README_END_MARKER = "<!-- screenshot:end -->";
 const DEFAULT_ALT_TEXT = "Project screenshot";
 
 export type WaitUntil = "load" | "domcontentloaded" | "networkidle" | "commit";
+export type CaptureFormat = "image" | "gif";
 
 export type ActionOptions = {
   workspace: string;
@@ -56,6 +57,23 @@ export function parseWaitUntil(value: string): WaitUntil {
   }
 
   throw new Error(`wait_until must be one of load, domcontentloaded, networkidle, commit. Received: ${value}`);
+}
+
+export function parseCaptureFormat(value: string): CaptureFormat {
+  if (value === "image" || value === "gif") {
+    return value;
+  }
+
+  throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
+}
+
+export function validateAssetPathForFormat(assetPath: string, captureFormat: CaptureFormat): void {
+  const expectedExtension = captureFormat === "image" ? ".png" : ".gif";
+  const actualExtension = path.extname(assetPath).toLowerCase();
+
+  if (actualExtension !== expectedExtension) {
+    throw new Error(`capture_format ${captureFormat} requires a ${expectedExtension} output path. Received: ${assetPath}`);
+  }
 }
 
 export function resolveWorkspacePath(workspace: string, repoRelativePath: string): string {

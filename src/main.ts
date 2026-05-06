@@ -1,20 +1,26 @@
 import * as core from "@actions/core";
-import { chromium } from "playwright-core";
+import { chromium, type Page } from "playwright-core";
 import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import path from "node:path";
+import GIFEncoder from "gif-encoder-2";
+import { PNG } from "pngjs";
 import {
   ensureParentDirectory,
+  parseCaptureFormat,
   findBrowserExecutable,
   parseInteger,
   parseWaitUntil,
   retry,
   resolveWorkspacePath,
   updateReadme,
+  validateAssetPathForFormat,
   validateUrl
 } from "./lib";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_GIF_FPS = 10;
 
 async function run(): Promise<void> {
   try {
@@ -24,8 +30,9 @@ async function run(): Promise<void> {
     }
 
     const url = validateUrl(core.getInput("url", { required: true })).toString();
-    const imagePath = core.getInput("image_path", { required: true });
+    const assetPath = core.getInput("image_path", { required: true });
     const readmePath = core.getInput("readme_path") || "README.md";
+    const captureFormat = parseCaptureFormat(core.getInput("capture_format") || "image");
     const viewportWidth = parseInteger("viewport_width", core.getInput("viewport_width") || "1440");
     const viewportHeight = parseInteger("viewport_height", core.getInput("viewport_height") || "900");
     const waitUntil = parseWaitUntil(core.getInput("wait_until") || "networkidle");
@@ -35,6 +42,7 @@ async function run(): Promise<void> {
       core.getInput("navigation_retry_delay_ms") || "1000"
     );
     const delayMs = parseInteger("delay_ms", core.getInput("delay_ms") || "0");
+    const gifDurationMs = parseInteger("gif_duration_ms", core.getInput("gif_duration_ms") || "1000");
     const browserPathInput = core.getInput("browser_path") || undefined;
     const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
     const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
@@ -44,38 +52,42 @@ async function run(): Promise<void> {
     const targetBranch = targetBranchInput || undefined;
     const token = core.getInput("token") || undefined;
 
-    const imageAbsolutePath = resolveWorkspacePath(workspace, imagePath);
+    validateAssetPathForFormat(assetPath, captureFormat);
+
+    const assetAbsolutePath = resolveWorkspacePath(workspace, assetPath);
     const readmeAbsolutePath = resolveWorkspacePath(workspace, readmePath);
     const browserExecutable = await findBrowserExecutable(browserPathInput);
 
-    await ensureParentDirectory(imageAbsolutePath);
-    await captureScreenshot({
+    await ensureParentDirectory(assetAbsolutePath);
+    await captureAsset({
       browserExecutable,
       url,
-      imageAbsolutePath,
+      assetAbsolutePath,
+      captureFormat,
       viewportWidth,
       viewportHeight,
       waitUntil,
       navigationRetries,
       navigationRetryDelayMs,
-      delayMs
+      delayMs,
+      gifDurationMs
     });
 
-    const readmeChanged = await updateReadme(readmeAbsolutePath, imagePath);
-    const screenshotChanged = await hasTrackedChanges(workspace, [imagePath]);
-    const changed = readmeChanged || screenshotChanged;
+    const readmeChanged = await updateReadme(readmeAbsolutePath, assetPath);
+    const assetChanged = await hasTrackedChanges(workspace, [assetPath]);
+    const changed = readmeChanged || assetChanged;
 
-    core.setOutput("image_path", path.normalize(imagePath));
+    core.setOutput("image_path", path.normalize(assetPath));
 
     if (!changed) {
-      core.info("README and screenshot are already up to date.");
+      core.info("README and captured asset are already up to date.");
       core.setOutput("changed", "false");
       core.setOutput("commit_sha", "");
       return;
     }
 
     await configureGit(workspace, gitUserName, gitUserEmail);
-    await stageFiles(workspace, [imagePath, readmePath]);
+    await stageFiles(workspace, [assetPath, readmePath]);
 
     const stagedDiff = await hasStagedChanges(workspace);
     if (!stagedDiff) {
@@ -96,16 +108,18 @@ async function run(): Promise<void> {
 type CaptureOptions = {
   browserExecutable: string;
   url: string;
-  imageAbsolutePath: string;
+  assetAbsolutePath: string;
+  captureFormat: "image" | "gif";
   viewportWidth: number;
   viewportHeight: number;
   waitUntil: "load" | "domcontentloaded" | "networkidle" | "commit";
   navigationRetries: number;
   navigationRetryDelayMs: number;
   delayMs: number;
+  gifDurationMs: number;
 };
 
-async function captureScreenshot(options: CaptureOptions): Promise<void> {
+async function captureAsset(options: CaptureOptions): Promise<void> {
   const browser = await chromium.launch({
     executablePath: options.browserExecutable,
     headless: true,
@@ -140,14 +154,39 @@ async function captureScreenshot(options: CaptureOptions): Promise<void> {
       await page.waitForTimeout(options.delayMs);
     }
 
-    await page.screenshot({
-      path: options.imageAbsolutePath,
-      type: "png",
-      fullPage: false
-    });
+    if (options.captureFormat === "gif") {
+      await captureGif(page, options);
+      return;
+    }
+
+    await page.screenshot({ path: options.assetAbsolutePath, type: "png", fullPage: false });
   } finally {
     await browser.close();
   }
+}
+
+async function captureGif(page: Page, options: CaptureOptions): Promise<void> {
+  const frameDelayMs = Math.max(1000 / DEFAULT_GIF_FPS, 20);
+  const frameCount = Math.max(1, Math.ceil(options.gifDurationMs / frameDelayMs));
+  const encoder = new GIFEncoder(options.viewportWidth, options.viewportHeight, "neuquant", true, frameCount);
+
+  encoder.start();
+  encoder.setRepeat(0);
+  encoder.setDelay(frameDelayMs);
+  encoder.setQuality(10);
+
+  for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+    const screenshotBuffer = (await page.screenshot({ type: "png", fullPage: false })) as Buffer;
+    const png = PNG.sync.read(screenshotBuffer);
+    encoder.addFrame(png.data);
+
+    if (frameIndex < frameCount - 1) {
+      await page.waitForTimeout(frameDelayMs);
+    }
+  }
+
+  encoder.finish();
+  await writeFile(options.assetAbsolutePath, encoder.out.getData());
 }
 
 async function configureGit(workspace: string, name: string, email: string): Promise<void> {

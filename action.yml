@@ -9,8 +9,12 @@ inputs:
     description: URL to open and capture.
     required: true
   image_path:
-    description: Repo-relative path where the screenshot PNG should be written.
+    description: Repo-relative path where the captured asset should be written.
     required: true
+  capture_format:
+    description: Whether to capture a static PNG image or an animated GIF.
+    required: false
+    default: image
   readme_path:
     description: Repo-relative path to the README file to update.
     required: false
@@ -39,6 +43,10 @@ inputs:
     description: Additional delay after navigation before taking the screenshot.
     required: false
     default: "0"
+  gif_duration_ms:
+    description: Duration of the GIF capture in milliseconds when capture_format is gif.
+    required: false
+    default: "1000"
   browser_path:
     description: Optional explicit browser executable path.
     required: false
@@ -67,7 +75,7 @@ outputs:
   commit_sha:
     description: SHA of the created commit, or empty when unchanged.
   image_path:
-    description: Repo-relative image path written by the action.
+    description: Repo-relative asset path written by the action.
 runs:
   using: node20
   main: dist/index.js
