@@ -9,6 +9,8 @@ A publishable GitHub Action that captures a screenshot of a site, writes it to a
 - Rewrites a marked block in the target README to point at the screenshot path
 - Commits and pushes the changed README and image back to the current branch
 
+If you trigger the workflow from `push` events on `main`, set `target_branch` to a dedicated automation branch so screenshot commits do not keep advancing `main`.
+
 ## Required README Markers
 
 The target README must contain this exact marker pair:
@@ -48,6 +50,7 @@ jobs:
           image_path: assets/screenshots/home.png
           navigation_retries: 5
           navigation_retry_delay_ms: 1000
+          target_branch: automation/update-screenshot
 ```
 
 ## Inputs
@@ -67,6 +70,7 @@ jobs:
 | `commit_message` | No | `chore: update README screenshot` | Commit message |
 | `git_user_name` | No | `github-actions[bot]` | Git author name |
 | `git_user_email` | No | `41898282+github-actions[bot]@users.noreply.github.com` | Git author email |
+| `target_branch` | No | current branch | Push the generated commit to this branch instead of the checked-out branch |
 | `token` | No | `${{ github.token }}` | Token used for push authentication |
 
 ## Outputs
@@ -83,6 +87,7 @@ jobs:
 - By default it looks for Chrome or Chromium in common GitHub-hosted runner locations.
 - The caller workflow must grant `contents: write`.
 - `navigation_retries` and `navigation_retry_delay_ms` are useful when the target URL is a local preview server that may not be ready on the first request.
+- When using a dedicated `target_branch`, make sure your checkout step fetches that branch or allows creating it on first push.
 
 ## Development
 

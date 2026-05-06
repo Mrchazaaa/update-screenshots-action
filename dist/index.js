@@ -209,6 +209,8 @@ async function run() {
         const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
         const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
         const gitUserEmail = core.getInput("git_user_email") || "41898282+github-actions[bot]@users.noreply.github.com";
+        const targetBranchInput = core.getInput("target_branch").trim();
+        const targetBranch = targetBranchInput || undefined;
         const token = core.getInput("token") || undefined;
         const imageAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, imagePath);
         const readmeAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, readmePath);
@@ -244,7 +246,7 @@ async function run() {
             core.setOutput("commit_sha", "");
             return;
         }
-        const commitSha = await commitAndPush(workspace, commitMessage, token);
+        const commitSha = await commitAndPush(workspace, commitMessage, token, targetBranch);
         core.setOutput("changed", "true");
         core.setOutput("commit_sha", commitSha);
     }
@@ -312,11 +314,11 @@ async function hasStagedChanges(workspace) {
         throw error;
     }
 }
-async function commitAndPush(workspace, commitMessage, token) {
+async function commitAndPush(workspace, commitMessage, token, targetBranch) {
     await execGit(workspace, ["commit", "-m", commitMessage]);
     const { stdout: shaStdout } = await execGit(workspace, ["rev-parse", "HEAD"]);
     const commitSha = shaStdout.trim();
-    const branch = await getBranchName(workspace);
+    const branch = targetBranch || (await getBranchName(workspace));
     if (token) {
         await configureAuthenticatedRemote(workspace, token);
     }

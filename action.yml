@@ -54,6 +54,9 @@ inputs:
     description: Git author email for the generated commit.
     required: false
     default: 41898282+github-actions[bot]@users.noreply.github.com
+  target_branch:
+    description: Optional branch to push the generated commit to instead of the currently checked out branch.
+    required: false
   token:
     description: GitHub token with contents:write permission.
     required: false
