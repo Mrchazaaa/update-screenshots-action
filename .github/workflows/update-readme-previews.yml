@@ -1,0 +1,32 @@
+name: Update README Previews
+
+on:
+  push:
+    # branches:
+    #   - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-readme-previews
+  cancel-in-progress: false
+
+jobs:
+  update-readme-previews:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - uses: ./
+        with:
+          url: https://en.wikipedia.org/wiki/Do_Androids_Dream_of_Electric_Sheep%3F
+          capture_path: assets/screenshots/demo.png
+          markdown_path: README.md
+          marker_name: screenshot
+          commit_changes: true
+          commit_message: "docs: refresh README demo screenshot"
+
+

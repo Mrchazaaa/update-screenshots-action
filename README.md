@@ -3,7 +3,15 @@
 [![Tests](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/tests.yml/badge.svg?branch=main&event=push)](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/tests.yml)
 [![Build](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/build.yml/badge.svg?branch=main&event=push)](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/build.yml)
 
-A publishable GitHub Action that captures a site as either a static PNG or an animated GIF, writes it to a repo-relative path in the checked-out workspace, and updates a marked block in `README.md`.
+A publishable GitHub Action that captures a site as either a static PNG or an animated GIF, writes it to a repo-relative path in the checked-out workspace, and updates a marked block in a Markdown file.
+
+## Demo
+
+This repository uses the action itself to keep the screenshot below up to date.
+
+<!-- screenshot:start -->
+![Project screenshot](assets/screenshots/demo.png)
+<!-- screenshot:end -->
 
 ## What It Does
 
@@ -15,7 +23,7 @@ The action can optionally commit and push its managed changes back to the curren
 
 ## Required README Markers
 
-The target README must contain this exact marker pair:
+The target Markdown file must contain this exact marker pair:
 
 ```md
 <!-- screenshot:start -->
@@ -23,7 +31,7 @@ The target README must contain this exact marker pair:
 <!-- screenshot:end -->
 ```
 
-Everything between those markers is replaced with a single Markdown image reference that points at the action's `image_path` input.
+Everything between those markers is replaced with a single Markdown image reference that points at the action's `capture_path` input.
 
 To update multiple screenshots in the same Markdown file, run the action multiple times with different `marker_name` values and matching marker pairs such as `<!-- hero:start --> ... <!-- hero:end -->` and `<!-- dashboard:start --> ... <!-- dashboard:end -->`.
 
@@ -48,12 +56,13 @@ jobs:
       - uses: Mrchazaaa/update-screenshots-action@v1
         with:
           url: https://example.com
-          image_path: assets/screenshots/home.png
+          capture_path: assets/screenshots/home.png
           marker_name: screenshot
           capture_format: image
-          readme_path: README.md
+          markdown_path: README.md
           navigation_retries: 5
           navigation_retry_delay_ms: 1000
+```
 
 Commit and push example:
 
@@ -65,10 +74,9 @@ Commit and push example:
 - uses: Mrchazaaa/update-screenshots-action@v1
   with:
     url: https://example.com
-    image_path: assets/screenshots/home.png
+    capture_path: assets/screenshots/home.png
     commit_changes: true
     commit_message: "docs: refresh homepage screenshot"
-```
 ```
 
 GIF capture example:
@@ -77,7 +85,7 @@ GIF capture example:
 - uses: Mrchazaaa/update-screenshots-action@v1
   with:
     url: https://example.com
-    image_path: assets/screenshots/home.gif
+    capture_path: assets/screenshots/home.gif
     capture_format: gif
     gif_duration_ms: 3000
 ```
@@ -87,10 +95,10 @@ GIF capture example:
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `url` | Yes |  | URL to open and capture |
-| `image_path` | Yes |  | Repo-relative output path for the captured asset |
+| `capture_path` | Yes |  | Repo-relative output path for the captured asset |
 | `marker_name` | No | `screenshot` | Marker name used to choose which `<!-- name:start -->` / `<!-- name:end -->` block to rewrite |
 | `capture_format` | No | `image` | Capture `image` for PNG output or `gif` for animated GIF output |
-| `readme_path` | No | `README.md` | Repo-relative README path |
+| `markdown_path` | No | `README.md` | Repo-relative Markdown path |
 | `viewport_width` | No | `1440` | Browser viewport width |
 | `viewport_height` | No | `900` | Browser viewport height |
 | `wait_until` | No | `networkidle` | Playwright navigation wait mode |
@@ -108,17 +116,17 @@ GIF capture example:
 
 | Output | Description |
 | --- | --- |
-| `image_path` | The repo-relative asset path that was written |
+| `capture_path` | The repo-relative asset path that was written |
 | `committed` | `true` when the action created and pushed a commit, otherwise `false` |
 
 ## Notes
 
-- The action fails if the README markers are missing.
+- The action fails if the expected Markdown markers are missing.
 - `marker_name` lets you run the action multiple times against the same Markdown file, as long as each target block uses a distinct marker name.
 - By default it looks for Chrome or Chromium in common GitHub-hosted runner locations.
-- `capture_format` controls whether the action writes a `.png` or `.gif`, and `image_path` must use the matching extension.
+- `capture_format` controls whether the action writes a `.png` or `.gif`, and `capture_path` must use the matching extension.
 - `navigation_retries` and `navigation_retry_delay_ms` are useful when the target URL is a local preview server that may not be ready on the first request.
-- When `commit_changes` is enabled, the action stages only `image_path` and `readme_path`, then commits and pushes only if one of those files changed.
+- When `commit_changes` is enabled, the action stages only `capture_path` and `markdown_path`, then commits and pushes only if one of those files changed.
 - `commit_changes` requires a normal branch checkout. Detached HEAD checkouts, missing credentials, and non-fast-forward push failures are surfaced as action errors.
 
 ## Development

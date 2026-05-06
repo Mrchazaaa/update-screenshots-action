@@ -8,7 +8,7 @@ inputs:
   url:
     description: URL to open and capture.
     required: true
-  image_path:
+  capture_path:
     description: Repo-relative path where the captured asset should be written.
     required: true
   marker_name:
@@ -19,8 +19,8 @@ inputs:
     description: Whether to capture a static PNG image or an animated GIF.
     required: false
     default: image
-  readme_path:
-    description: Repo-relative path to the README file to update.
+  markdown_path:
+    description: Repo-relative path to the Markdown file to update.
     required: false
     default: README.md
   viewport_width:
@@ -71,7 +71,7 @@ inputs:
     required: false
     default: "41898282+github-actions[bot]@users.noreply.github.com"
 outputs:
-  image_path:
+  capture_path:
     description: Repo-relative asset path written by the action.
   committed:
     description: Whether the action created and pushed a commit.

@@ -10,11 +10,11 @@ async function run(): Promise<void> {
     const config = parseActionConfig();
     const browserExecutable = await findBrowserExecutable(config.browserPath);
 
-    await ensureParentDirectory(config.assetAbsolutePath);
+    await ensureParentDirectory(config.captureAbsolutePath);
     await captureAsset({
       browserExecutable,
       url: config.url,
-      assetAbsolutePath: config.assetAbsolutePath,
+      assetAbsolutePath: config.captureAbsolutePath,
       captureFormat: config.captureFormat,
       viewportWidth: config.viewportWidth,
       viewportHeight: config.viewportHeight,
@@ -31,13 +31,13 @@ async function run(): Promise<void> {
       }
     });
 
-    const readmeChanged = await updateReadme(config.readmeAbsolutePath, config.assetPath, config.markerName);
-    core.setOutput("image_path", toPosixPath(config.assetPath));
-    core.info(`Captured ${config.captureFormat} asset at ${toPosixPath(config.assetPath)}.`);
+    const readmeChanged = await updateReadme(config.markdownAbsolutePath, config.capturePath, config.markerName);
+    core.setOutput("capture_path", toPosixPath(config.capturePath));
+    core.info(`Captured ${config.captureFormat} asset at ${toPosixPath(config.capturePath)}.`);
     if (readmeChanged) {
-      core.info(`Updated README marker ${config.markerName} in ${toPosixPath(config.readmePath)}.`);
+      core.info(`Updated Markdown marker ${config.markerName} in ${toPosixPath(config.markdownPath)}.`);
     } else {
-      core.info(`README marker ${config.markerName} in ${toPosixPath(config.readmePath)} was already up to date.`);
+      core.info(`Markdown marker ${config.markerName} in ${toPosixPath(config.markdownPath)} was already up to date.`);
     }
 
     let committed = false;

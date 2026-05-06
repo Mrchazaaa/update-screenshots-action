@@ -16,10 +16,10 @@ import {
 
 export type ActionConfig = {
   url: string;
-  assetPath: string;
-  assetAbsolutePath: string;
-  readmePath: string;
-  readmeAbsolutePath: string;
+  capturePath: string;
+  captureAbsolutePath: string;
+  markdownPath: string;
+  markdownAbsolutePath: string;
   markerName: string;
   captureFormat: CaptureFormat;
   viewportWidth: number;
@@ -45,8 +45,8 @@ export function parseActionConfig(): ActionConfig {
   }
 
   const url = validateUrl(core.getInput("url", { required: true })).toString();
-  const assetPath = core.getInput("image_path", { required: true });
-  const readmePath = core.getInput("readme_path") || "README.md";
+  const capturePath = core.getInput("capture_path", { required: true });
+  const markdownPath = core.getInput("markdown_path") || "README.md";
   const markerName = parseMarkerName(core.getInput("marker_name") || "screenshot");
   const captureFormat = parseCaptureFormat(core.getInput("capture_format") || "image");
   const viewportWidth = parseInteger("viewport_width", core.getInput("viewport_width") || "1440");
@@ -74,14 +74,14 @@ export function parseActionConfig(): ActionConfig {
     core.getInput("commit_author_email") || "41898282+github-actions[bot]@users.noreply.github.com"
   );
 
-  validateAssetPathForFormat(assetPath, captureFormat);
+  validateAssetPathForFormat(capturePath, captureFormat);
 
   return {
     url,
-    assetPath,
-    assetAbsolutePath: resolveWorkspacePath(workspace, assetPath),
-    readmePath,
-    readmeAbsolutePath: resolveWorkspacePath(workspace, readmePath),
+    capturePath,
+    captureAbsolutePath: resolveWorkspacePath(workspace, capturePath),
+    markdownPath,
+    markdownAbsolutePath: resolveWorkspacePath(workspace, markdownPath),
     markerName,
     captureFormat,
     viewportWidth,
@@ -97,6 +97,6 @@ export function parseActionConfig(): ActionConfig {
     commitAuthorName,
     commitAuthorEmail,
     workspace,
-    managedPaths: buildManagedPaths(assetPath, readmePath)
+    managedPaths: buildManagedPaths(capturePath, markdownPath)
   };
 }

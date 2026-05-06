@@ -147,8 +147,8 @@ function parseActionConfig() {
         throw new Error("GITHUB_WORKSPACE is not set.");
     }
     const url = (0, lib_1.validateUrl)(core.getInput("url", { required: true })).toString();
-    const assetPath = core.getInput("image_path", { required: true });
-    const readmePath = core.getInput("readme_path") || "README.md";
+    const capturePath = core.getInput("capture_path", { required: true });
+    const markdownPath = core.getInput("markdown_path") || "README.md";
     const markerName = (0, lib_1.parseMarkerName)(core.getInput("marker_name") || "screenshot");
     const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
     const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
@@ -163,13 +163,13 @@ function parseActionConfig() {
     const commitMessage = (0, lib_1.validateNonEmptyInput)("commit_message", core.getInput("commit_message") || "docs: update screenshots");
     const commitAuthorName = (0, lib_1.validateNonEmptyInput)("commit_author_name", core.getInput("commit_author_name") || "github-actions[bot]");
     const commitAuthorEmail = (0, lib_1.validateNonEmptyInput)("commit_author_email", core.getInput("commit_author_email") || "41898282+github-actions[bot]@users.noreply.github.com");
-    (0, lib_1.validateAssetPathForFormat)(assetPath, captureFormat);
+    (0, lib_1.validateAssetPathForFormat)(capturePath, captureFormat);
     return {
         url,
-        assetPath,
-        assetAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, assetPath),
-        readmePath,
-        readmeAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, readmePath),
+        capturePath,
+        captureAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, capturePath),
+        markdownPath,
+        markdownAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, markdownPath),
         markerName,
         captureFormat,
         viewportWidth,
@@ -185,7 +185,7 @@ function parseActionConfig() {
         commitAuthorName,
         commitAuthorEmail,
         workspace,
-        managedPaths: (0, lib_1.buildManagedPaths)(assetPath, readmePath)
+        managedPaths: (0, lib_1.buildManagedPaths)(capturePath, markdownPath)
     };
 }
 
@@ -487,11 +487,11 @@ async function run() {
     try {
         const config = (0, config_1.parseActionConfig)();
         const browserExecutable = await (0, capture_1.findBrowserExecutable)(config.browserPath);
-        await (0, lib_1.ensureParentDirectory)(config.assetAbsolutePath);
+        await (0, lib_1.ensureParentDirectory)(config.captureAbsolutePath);
         await (0, capture_1.captureAsset)({
             browserExecutable,
             url: config.url,
-            assetAbsolutePath: config.assetAbsolutePath,
+            assetAbsolutePath: config.captureAbsolutePath,
             captureFormat: config.captureFormat,
             viewportWidth: config.viewportWidth,
             viewportHeight: config.viewportHeight,
@@ -505,14 +505,14 @@ async function run() {
                 core.warning(`Navigation attempt ${attemptNumber} failed for ${config.url}: ${message}. Retrying in ${config.navigationRetryDelayMs}ms.`);
             }
         });
-        const readmeChanged = await (0, readme_1.updateReadme)(config.readmeAbsolutePath, config.assetPath, config.markerName);
-        core.setOutput("image_path", (0, lib_1.toPosixPath)(config.assetPath));
-        core.info(`Captured ${config.captureFormat} asset at ${(0, lib_1.toPosixPath)(config.assetPath)}.`);
+        const readmeChanged = await (0, readme_1.updateReadme)(config.markdownAbsolutePath, config.capturePath, config.markerName);
+        core.setOutput("capture_path", (0, lib_1.toPosixPath)(config.capturePath));
+        core.info(`Captured ${config.captureFormat} asset at ${(0, lib_1.toPosixPath)(config.capturePath)}.`);
         if (readmeChanged) {
-            core.info(`Updated README marker ${config.markerName} in ${(0, lib_1.toPosixPath)(config.readmePath)}.`);
+            core.info(`Updated Markdown marker ${config.markerName} in ${(0, lib_1.toPosixPath)(config.markdownPath)}.`);
         }
         else {
-            core.info(`README marker ${config.markerName} in ${(0, lib_1.toPosixPath)(config.readmePath)} was already up to date.`);
+            core.info(`Markdown marker ${config.markerName} in ${(0, lib_1.toPosixPath)(config.markdownPath)} was already up to date.`);
         }
         let committed = false;
         if (config.commitChanges) {
