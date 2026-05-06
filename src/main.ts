@@ -8,6 +8,7 @@ import GIFEncoder from "gif-encoder-2";
 import { PNG } from "pngjs";
 import {
   ensureParentDirectory,
+  parseBooleanInput,
   parseCaptureFormat,
   findBrowserExecutable,
   parseInteger,
@@ -34,6 +35,7 @@ async function run(): Promise<void> {
     const assetPath = core.getInput("image_path", { required: true });
     const readmePath = core.getInput("readme_path") || "README.md";
     const markerName = parseMarkerName(core.getInput("marker_name") || "screenshot");
+    const shouldPush = parseBooleanInput("push", core.getInput("push") || "true");
     const captureFormat = parseCaptureFormat(core.getInput("capture_format") || "image");
     const viewportWidth = parseInteger("viewport_width", core.getInput("viewport_width") || "1440");
     const viewportHeight = parseInteger("viewport_height", core.getInput("viewport_height") || "900");
@@ -84,6 +86,13 @@ async function run(): Promise<void> {
     if (!changed) {
       core.info("README and captured asset are already up to date.");
       core.setOutput("changed", "false");
+      core.setOutput("commit_sha", "");
+      return;
+    }
+
+    if (!shouldPush) {
+      core.info("Files were updated without creating a commit because push is false.");
+      core.setOutput("changed", "true");
       core.setOutput("commit_sha", "");
       return;
     }
@@ -235,6 +244,7 @@ async function commitAndPush(
     await configureAuthenticatedRemote(workspace, token);
   }
 
+  await rebaseOntoRemoteBranch(workspace, branch);
   await execGit(workspace, ["push", "origin", `HEAD:${branch}`]);
   return commitSha;
 }
@@ -263,6 +273,51 @@ async function configureAuthenticatedRemote(workspace: string, token: string): P
 
   const authenticatedUrl = remoteUrl.replace("https://", `https://x-access-token:${token}@`);
   await execGit(workspace, ["remote", "set-url", "origin", authenticatedUrl]);
+}
+
+async function rebaseOntoRemoteBranch(workspace: string, branch: string): Promise<void> {
+  const remoteBranchExists = await hasRemoteBranch(workspace, branch);
+  if (!remoteBranchExists) {
+    return;
+  }
+
+  await execGit(workspace, ["fetch", "origin", branch]);
+
+  try {
+    await execGit(workspace, ["rebase", "FETCH_HEAD"]);
+  } catch (error) {
+    await abortRebaseIfNeeded(workspace);
+    throw new Error(
+      `Could not rebase the generated commit onto origin/${branch}. Resolve the branch conflict and rerun the workflow.`
+    );
+  }
+}
+
+async function hasRemoteBranch(workspace: string, branch: string): Promise<boolean> {
+  try {
+    await execGit(workspace, ["ls-remote", "--exit-code", "--heads", "origin", branch]);
+    return true;
+  } catch (error) {
+    const exitCode = getExitCode(error);
+    if (exitCode === 2) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function abortRebaseIfNeeded(workspace: string): Promise<void> {
+  try {
+    await execGit(workspace, ["rebase", "--abort"]);
+  } catch (error) {
+    const exitCode = getExitCode(error);
+    if (exitCode === 128) {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 async function execGit(workspace: string, args: string[]): Promise<{ stdout: string; stderr: string }> {

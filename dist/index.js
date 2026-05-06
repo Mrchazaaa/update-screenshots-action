@@ -14,6 +14,7 @@ exports.validateUrl = validateUrl;
 exports.parseInteger = parseInteger;
 exports.parseWaitUntil = parseWaitUntil;
 exports.parseCaptureFormat = parseCaptureFormat;
+exports.parseBooleanInput = parseBooleanInput;
 exports.parseMarkerName = parseMarkerName;
 exports.validateAssetPathForFormat = validateAssetPathForFormat;
 exports.resolveWorkspacePath = resolveWorkspacePath;
@@ -56,6 +57,15 @@ function parseCaptureFormat(value) {
         return value;
     }
     throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
+}
+function parseBooleanInput(name, value) {
+    if (value === "true") {
+        return true;
+    }
+    if (value === "false") {
+        return false;
+    }
+    throw new Error(`${name} must be true or false. Received: ${value}`);
 }
 function parseMarkerName(value) {
     const normalized = value.trim();
@@ -237,6 +247,7 @@ async function run() {
         const assetPath = core.getInput("image_path", { required: true });
         const readmePath = core.getInput("readme_path") || "README.md";
         const markerName = (0, lib_1.parseMarkerName)(core.getInput("marker_name") || "screenshot");
+        const shouldPush = (0, lib_1.parseBooleanInput)("push", core.getInput("push") || "true");
         const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
         const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
         const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
@@ -277,6 +288,12 @@ async function run() {
         if (!changed) {
             core.info("README and captured asset are already up to date.");
             core.setOutput("changed", "false");
+            core.setOutput("commit_sha", "");
+            return;
+        }
+        if (!shouldPush) {
+            core.info("Files were updated without creating a commit because push is false.");
+            core.setOutput("changed", "true");
             core.setOutput("commit_sha", "");
             return;
         }
@@ -384,6 +401,7 @@ async function commitAndPush(workspace, commitMessage, token, targetBranch) {
     if (token) {
         await configureAuthenticatedRemote(workspace, token);
     }
+    await rebaseOntoRemoteBranch(workspace, branch);
     await execGit(workspace, ["push", "origin", `HEAD:${branch}`]);
     return commitSha;
 }
@@ -407,6 +425,45 @@ async function configureAuthenticatedRemote(workspace, token) {
     }
     const authenticatedUrl = remoteUrl.replace("https://", `https://x-access-token:${token}@`);
     await execGit(workspace, ["remote", "set-url", "origin", authenticatedUrl]);
+}
+async function rebaseOntoRemoteBranch(workspace, branch) {
+    const remoteBranchExists = await hasRemoteBranch(workspace, branch);
+    if (!remoteBranchExists) {
+        return;
+    }
+    await execGit(workspace, ["fetch", "origin", branch]);
+    try {
+        await execGit(workspace, ["rebase", "FETCH_HEAD"]);
+    }
+    catch (error) {
+        await abortRebaseIfNeeded(workspace);
+        throw new Error(`Could not rebase the generated commit onto origin/${branch}. Resolve the branch conflict and rerun the workflow.`);
+    }
+}
+async function hasRemoteBranch(workspace, branch) {
+    try {
+        await execGit(workspace, ["ls-remote", "--exit-code", "--heads", "origin", branch]);
+        return true;
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 2) {
+            return false;
+        }
+        throw error;
+    }
+}
+async function abortRebaseIfNeeded(workspace) {
+    try {
+        await execGit(workspace, ["rebase", "--abort"]);
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 128) {
+            return;
+        }
+        throw error;
+    }
 }
 async function execGit(workspace, args) {
     return execFileAsync("git", args, {

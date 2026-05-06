@@ -5,6 +5,7 @@ import os from "node:os";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import {
   buildReadmeImageBlock,
+  parseBooleanInput,
   parseCaptureFormat,
   parseMarkerName,
   retry,
@@ -93,6 +94,15 @@ test("parseCaptureFormat accepts supported values", () => {
 
 test("parseCaptureFormat rejects unsupported values", () => {
   assert.throws(() => parseCaptureFormat("both"), /capture_format must be one of image, gif/i);
+});
+
+test("parseBooleanInput accepts supported values", () => {
+  assert.equal(parseBooleanInput("push", "true"), true);
+  assert.equal(parseBooleanInput("push", "false"), false);
+});
+
+test("parseBooleanInput rejects unsupported values", () => {
+  assert.throws(() => parseBooleanInput("push", "yes"), /push must be true or false/i);
 });
 
 test("parseMarkerName accepts supported values", () => {

@@ -23,7 +23,7 @@ The target README must contain this exact marker pair:
 
 Everything between those markers is replaced with a single Markdown image reference that points at the action's `image_path` input.
 
-To update multiple screenshots in the same Markdown file, run the action multiple times with different `marker_name` values and matching marker pairs such as `<!-- hero:start --> ... <!-- hero:end -->` and `<!-- dashboard:start --> ... <!-- dashboard:end -->`.
+To update multiple screenshots in the same Markdown file, run the action multiple times with different `marker_name` values and matching marker pairs such as `<!-- hero:start --> ... <!-- hero:end -->` and `<!-- dashboard:start --> ... <!-- dashboard:end -->`. For that workflow shape, set `push: false` on each invocation and do one final git commit/push step at the end.
 
 ## Usage
 
@@ -51,6 +51,7 @@ jobs:
           url: https://example.com
           image_path: assets/screenshots/home.png
           marker_name: screenshot
+          push: true
           capture_format: image
           navigation_retries: 5
           navigation_retry_delay_ms: 1000
@@ -68,6 +69,32 @@ GIF capture example:
     gif_duration_ms: 3000
 ```
 
+Multiple markers in one file:
+
+```yaml
+- uses: Mrchazaaa/update-screenshots-action@v1
+  with:
+    url: https://example.com/hero
+    image_path: assets/screenshots/hero.png
+    marker_name: hero
+    push: false
+
+- uses: Mrchazaaa/update-screenshots-action@v1
+  with:
+    url: https://example.com/dashboard
+    image_path: assets/screenshots/dashboard.png
+    marker_name: dashboard
+    push: false
+
+- name: Commit screenshot updates
+  run: |
+    git config user.name github-actions[bot]
+    git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+    git add README.md assets/screenshots/hero.png assets/screenshots/dashboard.png
+    git commit -m "chore: update screenshots"
+    git push
+```
+
 ## Inputs
 
 | Input | Required | Default | Description |
@@ -75,6 +102,7 @@ GIF capture example:
 | `url` | Yes |  | URL to open and capture |
 | `image_path` | Yes |  | Repo-relative output path for the captured asset |
 | `marker_name` | No | `screenshot` | Marker name used to choose which `<!-- name:start -->` / `<!-- name:end -->` block to rewrite |
+| `push` | No | `true` | Create and push a commit when `true`; only update files in the workspace when `false` |
 | `capture_format` | No | `image` | Capture `image` for PNG output or `gif` for animated GIF output |
 | `readme_path` | No | `README.md` | Repo-relative README path |
 | `viewport_width` | No | `1440` | Browser viewport width |
@@ -103,6 +131,7 @@ GIF capture example:
 
 - The action fails if the README markers are missing.
 - `marker_name` lets you run the action multiple times against the same Markdown file, as long as each target block uses a distinct marker name.
+- Set `push: false` when you want several action invocations to accumulate changes in the same workflow before one final manual commit and push.
 - By default it looks for Chrome or Chromium in common GitHub-hosted runner locations.
 - The caller workflow must grant `contents: write`.
 - `capture_format` controls whether the action writes a `.png` or `.gif`, and `image_path` must use the matching extension.

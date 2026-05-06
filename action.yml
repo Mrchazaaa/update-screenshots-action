@@ -15,6 +15,10 @@ inputs:
     description: Marker name used for the README block, such as screenshot or hero.
     required: false
     default: screenshot
+  push:
+    description: Whether the action should create and push a commit. Set to false to only update files in the workspace.
+    required: false
+    default: "true"
   capture_format:
     description: Whether to capture a static PNG image or an animated GIF.
     required: false

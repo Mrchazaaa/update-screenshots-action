@@ -66,6 +66,18 @@ export function parseCaptureFormat(value: string): CaptureFormat {
   throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
 }
 
+export function parseBooleanInput(name: string, value: string): boolean {
+  if (value === "true") {
+    return true;
+  }
+
+  if (value === "false") {
+    return false;
+  }
+
+  throw new Error(`${name} must be true or false. Received: ${value}`);
+}
+
 export function parseMarkerName(value: string): string {
   const normalized = value.trim();
   if (!normalized) {
