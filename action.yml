@@ -61,15 +61,15 @@ inputs:
   commit_message:
     description: Commit message used when commit_changes is true.
     required: false
-    default: docs: update screenshots
+    default: "docs: update screenshots"
   commit_author_name:
     description: Commit author name used when commit_changes is true.
     required: false
-    default: github-actions[bot]
+    default: "github-actions[bot]"
   commit_author_email:
     description: Commit author email used when commit_changes is true.
     required: false
-    default: 41898282+github-actions[bot]@users.noreply.github.com
+    default: "41898282+github-actions[bot]@users.noreply.github.com"
 outputs:
   image_path:
     description: Repo-relative asset path written by the action.
