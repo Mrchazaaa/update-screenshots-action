@@ -12,10 +12,7 @@ export function buildReadmeImageBlock(imagePath: string, markerName = DEFAULT_MA
 export function replaceMarkedScreenshotBlock(readme: string, imagePath: string, markerName = DEFAULT_MARKER_NAME): string {
   const startMarker = buildReadmeStartMarker(markerName);
   const endMarker = buildReadmeEndMarker(markerName);
-  const blockPattern = new RegExp(
-    `${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`,
-    "m"
-  );
+  const blockPattern = new RegExp(`${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`, "m");
 
   if (!blockPattern.test(readme)) {
     throw new Error(`README is missing screenshot markers. Expected ${startMarker} and ${endMarker}.`);

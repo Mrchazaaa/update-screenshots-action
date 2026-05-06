@@ -3,47 +3,85 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export type GitResult = {
-  stdout: string;
-  stderr: string;
+export type CommitPushOptions = {
+  workspace: string;
+  paths: string[];
+  commitMessage: string;
+  commitAuthorName: string;
+  commitAuthorEmail: string;
 };
 
-export type GitClient = {
-  exec(args: string[]): Promise<GitResult>;
-};
+export async function commitAndPushIfNeeded(options: CommitPushOptions): Promise<boolean> {
+  await assertGitRepository(options.workspace);
 
-export function createGitClient(workspace: string): GitClient {
-  return {
-    exec(args: string[]) {
-      return execFileAsync("git", args, {
-        cwd: workspace,
-        env: process.env
-      });
-    }
-  };
-}
+  const branch = await getCurrentBranch(options.workspace);
+  await git(options.workspace, ["add", "--", ...options.paths]);
 
-export async function configureGit(client: GitClient, name: string, email: string): Promise<void> {
-  await client.exec(["config", "user.name", name]);
-  await client.exec(["config", "user.email", email]);
-}
+  if (!(await hasStagedChanges(options.workspace, options.paths))) {
+    return false;
+  }
 
-export async function stageFiles(client: GitClient, pathsToStage: string[]): Promise<void> {
-  await client.exec(["add", "--", ...pathsToStage]);
-}
+  const remote = await getPushRemote(options.workspace, branch);
 
-export async function hasTrackedChanges(client: GitClient, pathsToCheck: string[]): Promise<boolean> {
-  const { stdout } = await client.exec(["status", "--porcelain", "--", ...pathsToCheck]);
-  return stdout.trim().length > 0;
-}
+  await git(options.workspace, [
+    "-c",
+    `user.name=${options.commitAuthorName}`,
+    "-c",
+    `user.email=${options.commitAuthorEmail}`,
+    "commit",
+    "-m",
+    options.commitMessage
+  ]);
 
-export async function hasStagedChanges(client: GitClient): Promise<boolean> {
   try {
-    await client.exec(["diff", "--cached", "--quiet"]);
+    await git(options.workspace, ["push", remote, `HEAD:${branch}`]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to push commit to ${remote}/${branch}. ${message}`);
+  }
+
+  return true;
+}
+
+async function assertGitRepository(workspace: string): Promise<void> {
+  try {
+    await git(workspace, ["rev-parse", "--show-toplevel"]);
+  } catch {
+    throw new Error("commit_changes requires the workspace to be a git repository.");
+  }
+}
+
+async function getCurrentBranch(workspace: string): Promise<string> {
+  try {
+    return await git(workspace, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  } catch {
+    throw new Error(
+      "commit_changes requires a branch checkout. Detached HEAD is not supported; configure actions/checkout to check out a branch ref."
+    );
+  }
+}
+
+async function getPushRemote(workspace: string, branch: string): Promise<string> {
+  try {
+    return await git(workspace, ["config", "--get", `branch.${branch}.remote`]);
+  } catch {
+    try {
+      await git(workspace, ["remote", "get-url", "origin"]);
+      return "origin";
+    } catch {
+      throw new Error(
+        `Could not determine a push remote for branch ${branch}. Ensure actions/checkout preserves credentials and configures a remote.`
+      );
+    }
+  }
+}
+
+async function hasStagedChanges(workspace: string, paths: string[]): Promise<boolean> {
+  try {
+    await git(workspace, ["diff", "--cached", "--quiet", "--", ...paths]);
     return false;
   } catch (error) {
-    const exitCode = getExitCode(error);
-    if (exitCode === 1) {
+    if (error instanceof GitCommandError && error.exitCode === 1) {
       return true;
     }
 
@@ -51,191 +89,37 @@ export async function hasStagedChanges(client: GitClient): Promise<boolean> {
   }
 }
 
-export type CommitAndPushOptions = {
-  commitMessage: string;
-  token?: string;
-  targetBranch?: string;
-  fallbackBranch?: string;
-};
-
-export async function commitAndPush(client: GitClient, options: CommitAndPushOptions): Promise<string> {
-  await client.exec(["commit", "-m", options.commitMessage]);
-
-  const { stdout: shaStdout } = await client.exec(["rev-parse", "HEAD"]);
-  const commitSha = shaStdout.trim();
-  const currentBranch = await getCurrentBranchName(client);
-  const branch = options.targetBranch || currentBranch || options.fallbackBranch;
-
-  if (!branch) {
-    throw new Error("Could not determine the branch name for push.");
+class GitCommandError extends Error {
+  constructor(
+    readonly args: string[],
+    readonly exitCode: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "GitCommandError";
   }
-
-  await withAuthenticatedRemote(client, options.token, async () => {
-    if (options.targetBranch && currentBranch !== options.targetBranch) {
-      await publishToTargetBranch(client, commitSha, options.targetBranch);
-      return;
-    }
-
-    await rebaseOntoRemoteBranch(client, branch);
-    await client.exec(["push", "origin", `HEAD:${branch}`]);
-  });
-
-  return commitSha;
 }
 
-export async function getCurrentBranchName(client: GitClient): Promise<string | undefined> {
-  const { stdout } = await client.exec(["rev-parse", "--abbrev-ref", "HEAD"]);
-  const branch = stdout.trim();
-  if (branch && branch !== "HEAD") {
-    return branch;
-  }
-
-  return undefined;
-}
-
-async function publishToTargetBranch(client: GitClient, commitSha: string, targetBranch: string): Promise<void> {
-  const remoteBranchExists = await hasRemoteBranch(client, targetBranch);
-  if (!remoteBranchExists) {
-    await client.exec(["push", "origin", `${commitSha}:refs/heads/${targetBranch}`]);
-    return;
-  }
-
-  const restoreRef = await getRestoreRef(client);
-  const tempBranch = `update-screenshots-action/${Date.now()}`;
-
-  await client.exec(["fetch", "origin", targetBranch]);
-
+async function git(workspace: string, args: string[]): Promise<string> {
   try {
-    await client.exec(["checkout", "-B", tempBranch, "FETCH_HEAD"]);
-    await client.exec(["cherry-pick", "--strategy-option", "theirs", commitSha]);
-    await client.exec(["push", "origin", `HEAD:refs/heads/${targetBranch}`]);
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: workspace,
+      env: process.env
+    });
+    return stdout.trim();
   } catch (error) {
-    await abortCherryPickIfNeeded(client);
-    throw new Error(
-      `Could not publish the generated commit onto origin/${targetBranch}. Resolve the branch conflict and rerun the workflow.`
-    );
-  } finally {
-    await restoreCheckout(client, restoreRef);
-    await deleteBranchIfPresent(client, tempBranch);
+    const exitCode =
+      typeof error === "object" && error !== null && "code" in error && typeof error.code === "number" ? error.code : -1;
+    const stderr =
+      typeof error === "object" && error !== null && "stderr" in error && typeof error.stderr === "string"
+        ? error.stderr.trim()
+        : "";
+    const stdout =
+      typeof error === "object" && error !== null && "stdout" in error && typeof error.stdout === "string"
+        ? error.stdout.trim()
+        : "";
+
+    const detail = stderr || stdout || "git command failed";
+    throw new GitCommandError(args, exitCode, `git ${args.join(" ")} failed: ${detail}`);
   }
-}
-
-async function withAuthenticatedRemote<T>(client: GitClient, token: string | undefined, operation: () => Promise<T>): Promise<T> {
-  if (!token) {
-    return operation();
-  }
-
-  const { stdout } = await client.exec(["remote", "get-url", "origin"]);
-  const remoteUrl = stdout.trim();
-  if (!remoteUrl.startsWith("https://")) {
-    return operation();
-  }
-
-  const authenticatedUrl = remoteUrl.replace("https://", `https://x-access-token:${token}@`);
-  await client.exec(["remote", "set-url", "origin", authenticatedUrl]);
-
-  try {
-    return await operation();
-  } finally {
-    await client.exec(["remote", "set-url", "origin", remoteUrl]);
-  }
-}
-
-async function rebaseOntoRemoteBranch(client: GitClient, branch: string): Promise<void> {
-  const remoteBranchExists = await hasRemoteBranch(client, branch);
-  if (!remoteBranchExists) {
-    return;
-  }
-
-  await client.exec(["fetch", "origin", branch]);
-
-  try {
-    await client.exec(["rebase", "FETCH_HEAD"]);
-  } catch (error) {
-    await abortRebaseIfNeeded(client);
-    throw new Error(`Could not rebase the generated commit onto origin/${branch}. Resolve the branch conflict and rerun the workflow.`);
-  }
-}
-
-async function hasRemoteBranch(client: GitClient, branch: string): Promise<boolean> {
-  try {
-    await client.exec(["ls-remote", "--exit-code", "--heads", "origin", branch]);
-    return true;
-  } catch (error) {
-    const exitCode = getExitCode(error);
-    if (exitCode === 2) {
-      return false;
-    }
-
-    throw error;
-  }
-}
-
-async function abortRebaseIfNeeded(client: GitClient): Promise<void> {
-  try {
-    await client.exec(["rebase", "--abort"]);
-  } catch (error) {
-    const exitCode = getExitCode(error);
-    if (exitCode === 128) {
-      return;
-    }
-
-    throw error;
-  }
-}
-
-async function abortCherryPickIfNeeded(client: GitClient): Promise<void> {
-  try {
-    await client.exec(["cherry-pick", "--abort"]);
-  } catch (error) {
-    const exitCode = getExitCode(error);
-    if (exitCode === 128) {
-      return;
-    }
-
-    throw error;
-  }
-}
-
-async function getRestoreRef(client: GitClient): Promise<string> {
-  const branch = await getCurrentBranchName(client);
-  if (branch) {
-    return branch;
-  }
-
-  const { stdout } = await client.exec(["rev-parse", "HEAD"]);
-  return stdout.trim();
-}
-
-async function restoreCheckout(client: GitClient, restoreRef: string): Promise<void> {
-  const currentBranch = await getCurrentBranchName(client);
-  if (currentBranch === restoreRef) {
-    return;
-  }
-
-  await client.exec(["checkout", restoreRef]);
-}
-
-async function deleteBranchIfPresent(client: GitClient, branch: string): Promise<void> {
-  try {
-    await client.exec(["branch", "-D", branch]);
-  } catch (error) {
-    const exitCode = getExitCode(error);
-    if (exitCode === 1 || exitCode === 128) {
-      return;
-    }
-
-    throw error;
-  }
-}
-
-function getExitCode(error: unknown): number | undefined {
-  if (typeof error === "object" && error !== null && "code" in error) {
-    const code = (error as { code?: unknown }).code;
-    if (typeof code === "number") {
-      return code;
-    }
-  }
-
-  return undefined;
 }

@@ -150,7 +150,6 @@ function parseActionConfig() {
     const assetPath = core.getInput("image_path", { required: true });
     const readmePath = core.getInput("readme_path") || "README.md";
     const markerName = (0, lib_1.parseMarkerName)(core.getInput("marker_name") || "screenshot");
-    const shouldPush = (0, lib_1.parseBooleanInput)("push", core.getInput("push") || "true");
     const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
     const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
     const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
@@ -160,21 +159,18 @@ function parseActionConfig() {
     const delayMs = (0, lib_1.parseInteger)("delay_ms", core.getInput("delay_ms") || "0");
     const gifDurationMs = (0, lib_1.parseInteger)("gif_duration_ms", core.getInput("gif_duration_ms") || "1000");
     const browserPathInput = core.getInput("browser_path") || undefined;
-    const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
-    const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
-    const gitUserEmail = core.getInput("git_user_email") || "41898282+github-actions[bot]@users.noreply.github.com";
-    const targetBranchInput = core.getInput("target_branch").trim();
-    const token = core.getInput("token") || undefined;
+    const commitChanges = (0, lib_1.parseBoolean)("commit_changes", core.getInput("commit_changes") || "false");
+    const commitMessage = (0, lib_1.validateNonEmptyInput)("commit_message", core.getInput("commit_message") || "docs: update screenshots");
+    const commitAuthorName = (0, lib_1.validateNonEmptyInput)("commit_author_name", core.getInput("commit_author_name") || "github-actions[bot]");
+    const commitAuthorEmail = (0, lib_1.validateNonEmptyInput)("commit_author_email", core.getInput("commit_author_email") || "41898282+github-actions[bot]@users.noreply.github.com");
     (0, lib_1.validateAssetPathForFormat)(assetPath, captureFormat);
     return {
-        workspace,
         url,
         assetPath,
         assetAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, assetPath),
         readmePath,
         readmeAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, readmePath),
         markerName,
-        shouldPush,
         captureFormat,
         viewportWidth,
         viewportHeight,
@@ -184,11 +180,12 @@ function parseActionConfig() {
         delayMs,
         gifDurationMs,
         browserPath: browserPathInput,
+        commitChanges,
         commitMessage,
-        gitUserName,
-        gitUserEmail,
-        targetBranch: targetBranchInput || undefined,
-        token
+        commitAuthorName,
+        commitAuthorEmail,
+        workspace,
+        managedPaths: (0, lib_1.buildManagedPaths)(assetPath, readmePath)
     };
 }
 
@@ -201,204 +198,107 @@ function parseActionConfig() {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.createGitClient = createGitClient;
-exports.configureGit = configureGit;
-exports.stageFiles = stageFiles;
-exports.hasTrackedChanges = hasTrackedChanges;
-exports.hasStagedChanges = hasStagedChanges;
-exports.commitAndPush = commitAndPush;
-exports.getCurrentBranchName = getCurrentBranchName;
+exports.commitAndPushIfNeeded = commitAndPushIfNeeded;
 const node_child_process_1 = __nccwpck_require__(1421);
 const node_util_1 = __nccwpck_require__(7975);
 const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
-function createGitClient(workspace) {
-    return {
-        exec(args) {
-            return execFileAsync("git", args, {
-                cwd: workspace,
-                env: process.env
-            });
-        }
-    };
-}
-async function configureGit(client, name, email) {
-    await client.exec(["config", "user.name", name]);
-    await client.exec(["config", "user.email", email]);
-}
-async function stageFiles(client, pathsToStage) {
-    await client.exec(["add", "--", ...pathsToStage]);
-}
-async function hasTrackedChanges(client, pathsToCheck) {
-    const { stdout } = await client.exec(["status", "--porcelain", "--", ...pathsToCheck]);
-    return stdout.trim().length > 0;
-}
-async function hasStagedChanges(client) {
+async function commitAndPushIfNeeded(options) {
+    await assertGitRepository(options.workspace);
+    const branch = await getCurrentBranch(options.workspace);
+    await git(options.workspace, ["add", "--", ...options.paths]);
+    if (!(await hasStagedChanges(options.workspace, options.paths))) {
+        return false;
+    }
+    const remote = await getPushRemote(options.workspace, branch);
+    await git(options.workspace, [
+        "-c",
+        `user.name=${options.commitAuthorName}`,
+        "-c",
+        `user.email=${options.commitAuthorEmail}`,
+        "commit",
+        "-m",
+        options.commitMessage
+    ]);
     try {
-        await client.exec(["diff", "--cached", "--quiet"]);
+        await git(options.workspace, ["push", remote, `HEAD:${branch}`]);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to push commit to ${remote}/${branch}. ${message}`);
+    }
+    return true;
+}
+async function assertGitRepository(workspace) {
+    try {
+        await git(workspace, ["rev-parse", "--show-toplevel"]);
+    }
+    catch {
+        throw new Error("commit_changes requires the workspace to be a git repository.");
+    }
+}
+async function getCurrentBranch(workspace) {
+    try {
+        return await git(workspace, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    }
+    catch {
+        throw new Error("commit_changes requires a branch checkout. Detached HEAD is not supported; configure actions/checkout to check out a branch ref.");
+    }
+}
+async function getPushRemote(workspace, branch) {
+    try {
+        return await git(workspace, ["config", "--get", `branch.${branch}.remote`]);
+    }
+    catch {
+        try {
+            await git(workspace, ["remote", "get-url", "origin"]);
+            return "origin";
+        }
+        catch {
+            throw new Error(`Could not determine a push remote for branch ${branch}. Ensure actions/checkout preserves credentials and configures a remote.`);
+        }
+    }
+}
+async function hasStagedChanges(workspace, paths) {
+    try {
+        await git(workspace, ["diff", "--cached", "--quiet", "--", ...paths]);
         return false;
     }
     catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 1) {
+        if (error instanceof GitCommandError && error.exitCode === 1) {
             return true;
         }
         throw error;
     }
 }
-async function commitAndPush(client, options) {
-    await client.exec(["commit", "-m", options.commitMessage]);
-    const { stdout: shaStdout } = await client.exec(["rev-parse", "HEAD"]);
-    const commitSha = shaStdout.trim();
-    const currentBranch = await getCurrentBranchName(client);
-    const branch = options.targetBranch || currentBranch || options.fallbackBranch;
-    if (!branch) {
-        throw new Error("Could not determine the branch name for push.");
+class GitCommandError extends Error {
+    args;
+    exitCode;
+    constructor(args, exitCode, message) {
+        super(message);
+        this.args = args;
+        this.exitCode = exitCode;
+        this.name = "GitCommandError";
     }
-    await withAuthenticatedRemote(client, options.token, async () => {
-        if (options.targetBranch && currentBranch !== options.targetBranch) {
-            await publishToTargetBranch(client, commitSha, options.targetBranch);
-            return;
-        }
-        await rebaseOntoRemoteBranch(client, branch);
-        await client.exec(["push", "origin", `HEAD:${branch}`]);
-    });
-    return commitSha;
 }
-async function getCurrentBranchName(client) {
-    const { stdout } = await client.exec(["rev-parse", "--abbrev-ref", "HEAD"]);
-    const branch = stdout.trim();
-    if (branch && branch !== "HEAD") {
-        return branch;
-    }
-    return undefined;
-}
-async function publishToTargetBranch(client, commitSha, targetBranch) {
-    const remoteBranchExists = await hasRemoteBranch(client, targetBranch);
-    if (!remoteBranchExists) {
-        await client.exec(["push", "origin", `${commitSha}:refs/heads/${targetBranch}`]);
-        return;
-    }
-    const restoreRef = await getRestoreRef(client);
-    const tempBranch = `update-screenshots-action/${Date.now()}`;
-    await client.exec(["fetch", "origin", targetBranch]);
+async function git(workspace, args) {
     try {
-        await client.exec(["checkout", "-B", tempBranch, "FETCH_HEAD"]);
-        await client.exec(["cherry-pick", "--strategy-option", "theirs", commitSha]);
-        await client.exec(["push", "origin", `HEAD:refs/heads/${targetBranch}`]);
+        const { stdout } = await execFileAsync("git", args, {
+            cwd: workspace,
+            env: process.env
+        });
+        return stdout.trim();
     }
     catch (error) {
-        await abortCherryPickIfNeeded(client);
-        throw new Error(`Could not publish the generated commit onto origin/${targetBranch}. Resolve the branch conflict and rerun the workflow.`);
+        const exitCode = typeof error === "object" && error !== null && "code" in error && typeof error.code === "number" ? error.code : -1;
+        const stderr = typeof error === "object" && error !== null && "stderr" in error && typeof error.stderr === "string"
+            ? error.stderr.trim()
+            : "";
+        const stdout = typeof error === "object" && error !== null && "stdout" in error && typeof error.stdout === "string"
+            ? error.stdout.trim()
+            : "";
+        const detail = stderr || stdout || "git command failed";
+        throw new GitCommandError(args, exitCode, `git ${args.join(" ")} failed: ${detail}`);
     }
-    finally {
-        await restoreCheckout(client, restoreRef);
-        await deleteBranchIfPresent(client, tempBranch);
-    }
-}
-async function withAuthenticatedRemote(client, token, operation) {
-    if (!token) {
-        return operation();
-    }
-    const { stdout } = await client.exec(["remote", "get-url", "origin"]);
-    const remoteUrl = stdout.trim();
-    if (!remoteUrl.startsWith("https://")) {
-        return operation();
-    }
-    const authenticatedUrl = remoteUrl.replace("https://", `https://x-access-token:${token}@`);
-    await client.exec(["remote", "set-url", "origin", authenticatedUrl]);
-    try {
-        return await operation();
-    }
-    finally {
-        await client.exec(["remote", "set-url", "origin", remoteUrl]);
-    }
-}
-async function rebaseOntoRemoteBranch(client, branch) {
-    const remoteBranchExists = await hasRemoteBranch(client, branch);
-    if (!remoteBranchExists) {
-        return;
-    }
-    await client.exec(["fetch", "origin", branch]);
-    try {
-        await client.exec(["rebase", "FETCH_HEAD"]);
-    }
-    catch (error) {
-        await abortRebaseIfNeeded(client);
-        throw new Error(`Could not rebase the generated commit onto origin/${branch}. Resolve the branch conflict and rerun the workflow.`);
-    }
-}
-async function hasRemoteBranch(client, branch) {
-    try {
-        await client.exec(["ls-remote", "--exit-code", "--heads", "origin", branch]);
-        return true;
-    }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 2) {
-            return false;
-        }
-        throw error;
-    }
-}
-async function abortRebaseIfNeeded(client) {
-    try {
-        await client.exec(["rebase", "--abort"]);
-    }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 128) {
-            return;
-        }
-        throw error;
-    }
-}
-async function abortCherryPickIfNeeded(client) {
-    try {
-        await client.exec(["cherry-pick", "--abort"]);
-    }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 128) {
-            return;
-        }
-        throw error;
-    }
-}
-async function getRestoreRef(client) {
-    const branch = await getCurrentBranchName(client);
-    if (branch) {
-        return branch;
-    }
-    const { stdout } = await client.exec(["rev-parse", "HEAD"]);
-    return stdout.trim();
-}
-async function restoreCheckout(client, restoreRef) {
-    const currentBranch = await getCurrentBranchName(client);
-    if (currentBranch === restoreRef) {
-        return;
-    }
-    await client.exec(["checkout", restoreRef]);
-}
-async function deleteBranchIfPresent(client, branch) {
-    try {
-        await client.exec(["branch", "-D", branch]);
-    }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 1 || exitCode === 128) {
-            return;
-        }
-        throw error;
-    }
-}
-function getExitCode(error) {
-    if (typeof error === "object" && error !== null && "code" in error) {
-        const code = error.code;
-        if (typeof code === "number") {
-            return code;
-        }
-    }
-    return undefined;
 }
 
 
@@ -415,11 +315,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.validateUrl = validateUrl;
 exports.parseInteger = parseInteger;
+exports.parseBoolean = parseBoolean;
 exports.parseWaitUntil = parseWaitUntil;
 exports.parseCaptureFormat = parseCaptureFormat;
-exports.parseBooleanInput = parseBooleanInput;
 exports.parseMarkerName = parseMarkerName;
 exports.validateAssetPathForFormat = validateAssetPathForFormat;
+exports.validateNonEmptyInput = validateNonEmptyInput;
+exports.buildManagedPaths = buildManagedPaths;
 exports.resolveWorkspacePath = resolveWorkspacePath;
 exports.toPosixPath = toPosixPath;
 exports.ensureParentDirectory = ensureParentDirectory;
@@ -442,6 +344,16 @@ function parseInteger(name, value) {
     }
     return parsed;
 }
+function parseBoolean(name, value) {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+        return true;
+    }
+    if (normalized === "false") {
+        return false;
+    }
+    throw new Error(`${name} must be true or false. Received: ${value}`);
+}
 function parseWaitUntil(value) {
     if (value === "load" || value === "domcontentloaded" || value === "networkidle" || value === "commit") {
         return value;
@@ -453,15 +365,6 @@ function parseCaptureFormat(value) {
         return value;
     }
     throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
-}
-function parseBooleanInput(name, value) {
-    if (value === "true") {
-        return true;
-    }
-    if (value === "false") {
-        return false;
-    }
-    throw new Error(`${name} must be true or false. Received: ${value}`);
 }
 function parseMarkerName(value) {
     const normalized = value.trim();
@@ -479,6 +382,16 @@ function validateAssetPathForFormat(assetPath, captureFormat) {
     if (actualExtension !== expectedExtension) {
         throw new Error(`capture_format ${captureFormat} requires a ${expectedExtension} output path. Received: ${assetPath}`);
     }
+}
+function validateNonEmptyInput(name, value) {
+    const normalized = value.trim();
+    if (!normalized) {
+        throw new Error(`${name} must not be empty.`);
+    }
+    return normalized;
+}
+function buildManagedPaths(assetPath, readmePath) {
+    return [assetPath, readmePath];
 }
 function resolveWorkspacePath(workspace, repoRelativePath) {
     if (!repoRelativePath.trim()) {
@@ -573,7 +486,6 @@ const readme_1 = __nccwpck_require__(9256);
 async function run() {
     try {
         const config = (0, config_1.parseActionConfig)();
-        const git = (0, git_1.createGitClient)(config.workspace);
         const browserExecutable = await (0, capture_1.findBrowserExecutable)(config.browserPath);
         await (0, lib_1.ensureParentDirectory)(config.assetAbsolutePath);
         await (0, capture_1.captureAsset)({
@@ -594,38 +506,31 @@ async function run() {
             }
         });
         const readmeChanged = await (0, readme_1.updateReadme)(config.readmeAbsolutePath, config.assetPath, config.markerName);
-        const assetChanged = await (0, git_1.hasTrackedChanges)(git, [config.assetPath]);
-        const changed = readmeChanged || assetChanged;
         core.setOutput("image_path", (0, lib_1.toPosixPath)(config.assetPath));
-        if (!changed) {
-            core.info("README and captured asset are already up to date.");
-            core.setOutput("changed", "false");
-            core.setOutput("commit_sha", "");
-            return;
+        core.info(`Captured ${config.captureFormat} asset at ${(0, lib_1.toPosixPath)(config.assetPath)}.`);
+        if (readmeChanged) {
+            core.info(`Updated README marker ${config.markerName} in ${(0, lib_1.toPosixPath)(config.readmePath)}.`);
         }
-        if (!config.shouldPush) {
-            core.info("Files were updated without creating a commit because push is false.");
-            core.setOutput("changed", "true");
-            core.setOutput("commit_sha", "");
-            return;
+        else {
+            core.info(`README marker ${config.markerName} in ${(0, lib_1.toPosixPath)(config.readmePath)} was already up to date.`);
         }
-        await (0, git_1.configureGit)(git, config.gitUserName, config.gitUserEmail);
-        await (0, git_1.stageFiles)(git, [config.assetPath, config.readmePath]);
-        const stagedDiff = await (0, git_1.hasStagedChanges)(git);
-        if (!stagedDiff) {
-            core.info("File rewrites produced no staged diff.");
-            core.setOutput("changed", "false");
-            core.setOutput("commit_sha", "");
-            return;
+        let committed = false;
+        if (config.commitChanges) {
+            committed = await (0, git_1.commitAndPushIfNeeded)({
+                workspace: config.workspace,
+                paths: config.managedPaths,
+                commitMessage: config.commitMessage,
+                commitAuthorName: config.commitAuthorName,
+                commitAuthorEmail: config.commitAuthorEmail
+            });
+            if (committed) {
+                core.info("Committed and pushed updated screenshot artifacts.");
+            }
+            else {
+                core.info("No managed file changes were staged, so commit and push were skipped.");
+            }
         }
-        const commitSha = await (0, git_1.commitAndPush)(git, {
-            commitMessage: config.commitMessage,
-            token: config.token,
-            targetBranch: config.targetBranch,
-            fallbackBranch: process.env.GITHUB_REF_NAME
-        });
-        core.setOutput("changed", "true");
-        core.setOutput("commit_sha", commitSha);
+        core.setOutput("committed", committed ? "true" : "false");
     }
     catch (error) {
         core.setFailed(error instanceof Error ? error.message : String(error));

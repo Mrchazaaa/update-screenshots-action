@@ -2,9 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { parseBooleanInput, parseCaptureFormat, parseMarkerName, resolveWorkspacePath, retry, validateAssetPathForFormat } from "../lib/lib.js";
+import {
+  buildManagedPaths,
+  parseBoolean,
+  parseCaptureFormat,
+  parseMarkerName,
+  resolveWorkspacePath,
+  retry,
+  validateAssetPathForFormat
+} from "../lib/lib.js";
+import { commitAndPushIfNeeded } from "../lib/git.js";
 import { buildReadmeImageBlock, replaceMarkedScreenshotBlock, updateReadme } from "../lib/readme.js";
+
+const execFileAsync = promisify(execFile);
 
 test("replaceMarkedScreenshotBlock rewrites only the marked block", () => {
   const current = [
@@ -87,13 +100,13 @@ test("parseCaptureFormat rejects unsupported values", () => {
   assert.throws(() => parseCaptureFormat("both"), /capture_format must be one of image, gif/i);
 });
 
-test("parseBooleanInput accepts supported values", () => {
-  assert.equal(parseBooleanInput("push", "true"), true);
-  assert.equal(parseBooleanInput("push", "false"), false);
+test("parseBoolean accepts supported values", () => {
+  assert.equal(parseBoolean("commit_changes", "true"), true);
+  assert.equal(parseBoolean("commit_changes", "FALSE"), false);
 });
 
-test("parseBooleanInput rejects unsupported values", () => {
-  assert.throws(() => parseBooleanInput("push", "yes"), /push must be true or false/i);
+test("parseBoolean rejects unsupported values", () => {
+  assert.throws(() => parseBoolean("commit_changes", "yes"), /commit_changes must be true or false/i);
 });
 
 test("parseMarkerName accepts supported values", () => {
@@ -118,6 +131,13 @@ test("validateAssetPathForFormat enforces matching extensions", () => {
     () => validateAssetPathForFormat("assets/screenshots/home.png", "gif"),
     /capture_format gif requires a \.gif output path/i
   );
+});
+
+test("buildManagedPaths preserves declared output ordering", () => {
+  assert.deepEqual(buildManagedPaths("assets/screenshots/home.png", "README.md"), [
+    "assets/screenshots/home.png",
+    "README.md"
+  ]);
 });
 
 test("updateReadme reports false when content already matches", async () => {
@@ -198,3 +218,91 @@ test("retry rethrows after exhausting retries", async () => {
     /still failing/
   );
 });
+
+test("commitAndPushIfNeeded returns false when managed files are unchanged", async () => {
+  const repoDir = await mkdtemp(path.join(os.tmpdir(), "update-screenshots-action-git-noop-"));
+  await initGitRepo(repoDir);
+
+  await writeFile(path.join(repoDir, "README.md"), "# Example\n", "utf8");
+  await writeFile(path.join(repoDir, "assets.png"), "image", "utf8");
+  await git(repoDir, ["add", "--", "README.md", "assets.png"]);
+  await git(repoDir, ["commit", "-m", "initial"]);
+
+  const committed = await commitAndPushIfNeeded({
+    workspace: repoDir,
+    paths: ["assets.png", "README.md"],
+    commitMessage: "docs: update screenshots",
+    commitAuthorName: "github-actions[bot]",
+    commitAuthorEmail: "41898282+github-actions[bot]@users.noreply.github.com"
+  });
+
+  assert.equal(committed, false);
+});
+
+test("commitAndPushIfNeeded commits and pushes managed files to the current branch", async () => {
+  const remoteDir = await mkdtemp(path.join(os.tmpdir(), "update-screenshots-action-remote-"));
+  await git(remoteDir, ["init", "--bare"]);
+
+  const repoDir = await mkdtemp(path.join(os.tmpdir(), "update-screenshots-action-git-push-"));
+  await initGitRepo(repoDir);
+  await git(repoDir, ["remote", "add", "origin", remoteDir]);
+
+  await writeFile(path.join(repoDir, "README.md"), "# Example\n", "utf8");
+  await writeFile(path.join(repoDir, "assets.png"), "before", "utf8");
+  await git(repoDir, ["add", "--", "README.md", "assets.png"]);
+  await git(repoDir, ["commit", "-m", "initial"]);
+  await git(repoDir, ["push", "-u", "origin", "main"]);
+
+  await writeFile(path.join(repoDir, "README.md"), "# Example\n![Project screenshot](assets.png)\n", "utf8");
+  await writeFile(path.join(repoDir, "assets.png"), "after", "utf8");
+  await writeFile(path.join(repoDir, "IGNORED.txt"), "left unstaged", "utf8");
+
+  const committed = await commitAndPushIfNeeded({
+    workspace: repoDir,
+    paths: ["assets.png", "README.md"],
+    commitMessage: "docs: update screenshots",
+    commitAuthorName: "github-actions[bot]",
+    commitAuthorEmail: "41898282+github-actions[bot]@users.noreply.github.com"
+  });
+
+  assert.equal(committed, true);
+  assert.match(await git(repoDir, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]), /origin\/main/);
+  assert.equal(await git(repoDir, ["show", "--format=%s", "--no-patch", "HEAD"]), "docs: update screenshots");
+  assert.equal(await git(repoDir, ["status", "--short", "--", "IGNORED.txt"]), "?? IGNORED.txt");
+  assert.equal(await git(repoDir, ["show", "origin/main:README.md"]), "# Example\n![Project screenshot](assets.png)");
+});
+
+test("commitAndPushIfNeeded fails on detached HEAD", async () => {
+  const repoDir = await mkdtemp(path.join(os.tmpdir(), "update-screenshots-action-git-detached-"));
+  await initGitRepo(repoDir);
+
+  await writeFile(path.join(repoDir, "README.md"), "# Example\n", "utf8");
+  await writeFile(path.join(repoDir, "assets.png"), "image", "utf8");
+  await git(repoDir, ["add", "--", "README.md", "assets.png"]);
+  await git(repoDir, ["commit", "-m", "initial"]);
+  const initialSha = await git(repoDir, ["rev-parse", "HEAD"]);
+  await git(repoDir, ["checkout", initialSha]);
+  await writeFile(path.join(repoDir, "README.md"), "# Changed\n", "utf8");
+
+  await assert.rejects(
+    commitAndPushIfNeeded({
+      workspace: repoDir,
+      paths: ["assets.png", "README.md"],
+      commitMessage: "docs: update screenshots",
+      commitAuthorName: "github-actions[bot]",
+      commitAuthorEmail: "41898282+github-actions[bot]@users.noreply.github.com"
+    }),
+    /Detached HEAD is not supported/i
+  );
+});
+
+async function initGitRepo(repoDir) {
+  await git(repoDir, ["init", "-b", "main"]);
+  await git(repoDir, ["config", "user.name", "Test User"]);
+  await git(repoDir, ["config", "user.email", "test@example.com"]);
+}
+
+async function git(cwd, args) {
+  const { stdout } = await execFileAsync("git", args, { cwd });
+  return stdout.trim();
+}

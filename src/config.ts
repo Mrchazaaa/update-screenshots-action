@@ -1,11 +1,13 @@
 import * as core from "@actions/core";
 import {
-  parseBooleanInput,
+  buildManagedPaths,
+  parseBoolean,
   parseCaptureFormat,
   parseInteger,
   parseMarkerName,
   parseWaitUntil,
   resolveWorkspacePath,
+  validateNonEmptyInput,
   validateAssetPathForFormat,
   validateUrl,
   type CaptureFormat,
@@ -13,14 +15,12 @@ import {
 } from "./lib";
 
 export type ActionConfig = {
-  workspace: string;
   url: string;
   assetPath: string;
   assetAbsolutePath: string;
   readmePath: string;
   readmeAbsolutePath: string;
   markerName: string;
-  shouldPush: boolean;
   captureFormat: CaptureFormat;
   viewportWidth: number;
   viewportHeight: number;
@@ -30,11 +30,12 @@ export type ActionConfig = {
   delayMs: number;
   gifDurationMs: number;
   browserPath?: string;
+  commitChanges: boolean;
   commitMessage: string;
-  gitUserName: string;
-  gitUserEmail: string;
-  targetBranch?: string;
-  token?: string;
+  commitAuthorName: string;
+  commitAuthorEmail: string;
+  workspace: string;
+  managedPaths: string[];
 };
 
 export function parseActionConfig(): ActionConfig {
@@ -47,7 +48,6 @@ export function parseActionConfig(): ActionConfig {
   const assetPath = core.getInput("image_path", { required: true });
   const readmePath = core.getInput("readme_path") || "README.md";
   const markerName = parseMarkerName(core.getInput("marker_name") || "screenshot");
-  const shouldPush = parseBooleanInput("push", core.getInput("push") || "true");
   const captureFormat = parseCaptureFormat(core.getInput("capture_format") || "image");
   const viewportWidth = parseInteger("viewport_width", core.getInput("viewport_width") || "1440");
   const viewportHeight = parseInteger("viewport_height", core.getInput("viewport_height") || "900");
@@ -60,23 +60,29 @@ export function parseActionConfig(): ActionConfig {
   const delayMs = parseInteger("delay_ms", core.getInput("delay_ms") || "0");
   const gifDurationMs = parseInteger("gif_duration_ms", core.getInput("gif_duration_ms") || "1000");
   const browserPathInput = core.getInput("browser_path") || undefined;
-  const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
-  const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
-  const gitUserEmail = core.getInput("git_user_email") || "41898282+github-actions[bot]@users.noreply.github.com";
-  const targetBranchInput = core.getInput("target_branch").trim();
-  const token = core.getInput("token") || undefined;
+  const commitChanges = parseBoolean("commit_changes", core.getInput("commit_changes") || "false");
+  const commitMessage = validateNonEmptyInput(
+    "commit_message",
+    core.getInput("commit_message") || "docs: update screenshots"
+  );
+  const commitAuthorName = validateNonEmptyInput(
+    "commit_author_name",
+    core.getInput("commit_author_name") || "github-actions[bot]"
+  );
+  const commitAuthorEmail = validateNonEmptyInput(
+    "commit_author_email",
+    core.getInput("commit_author_email") || "41898282+github-actions[bot]@users.noreply.github.com"
+  );
 
   validateAssetPathForFormat(assetPath, captureFormat);
 
   return {
-    workspace,
     url,
     assetPath,
     assetAbsolutePath: resolveWorkspacePath(workspace, assetPath),
     readmePath,
     readmeAbsolutePath: resolveWorkspacePath(workspace, readmePath),
     markerName,
-    shouldPush,
     captureFormat,
     viewportWidth,
     viewportHeight,
@@ -86,10 +92,11 @@ export function parseActionConfig(): ActionConfig {
     delayMs,
     gifDurationMs,
     browserPath: browserPathInput,
+    commitChanges,
     commitMessage,
-    gitUserName,
-    gitUserEmail,
-    targetBranch: targetBranchInput || undefined,
-    token
+    commitAuthorName,
+    commitAuthorEmail,
+    workspace,
+    managedPaths: buildManagedPaths(assetPath, readmePath)
   };
 }

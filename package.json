@@ -1,7 +1,7 @@
 {
   "name": "update-screenshots-action",
   "version": "0.1.0",
-  "description": "GitHub Action that captures a webpage screenshot and updates a marked image block in the root README.",
+  "description": "GitHub Action that captures a webpage as a PNG screenshot or animated GIF.",
   "main": "dist/index.js",
   "scripts": {
     "clean": "rm -rf dist lib",

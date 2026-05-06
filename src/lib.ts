@@ -27,6 +27,19 @@ export function parseInteger(name: string, value: string): number {
   return parsed;
 }
 
+export function parseBoolean(name: string, value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+
+  if (normalized === "false") {
+    return false;
+  }
+
+  throw new Error(`${name} must be true or false. Received: ${value}`);
+}
+
 export function parseWaitUntil(value: string): WaitUntil {
   if (value === "load" || value === "domcontentloaded" || value === "networkidle" || value === "commit") {
     return value;
@@ -41,18 +54,6 @@ export function parseCaptureFormat(value: string): CaptureFormat {
   }
 
   throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
-}
-
-export function parseBooleanInput(name: string, value: string): boolean {
-  if (value === "true") {
-    return true;
-  }
-
-  if (value === "false") {
-    return false;
-  }
-
-  throw new Error(`${name} must be true or false. Received: ${value}`);
 }
 
 export function parseMarkerName(value: string): string {
@@ -75,6 +76,19 @@ export function validateAssetPathForFormat(assetPath: string, captureFormat: Cap
   if (actualExtension !== expectedExtension) {
     throw new Error(`capture_format ${captureFormat} requires a ${expectedExtension} output path. Received: ${assetPath}`);
   }
+}
+
+export function validateNonEmptyInput(name: string, value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`${name} must not be empty.`);
+  }
+
+  return normalized;
+}
+
+export function buildManagedPaths(assetPath: string, readmePath: string): string[] {
+  return [assetPath, readmePath];
 }
 
 export function resolveWorkspacePath(workspace: string, repoRelativePath: string): string {

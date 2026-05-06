@@ -1,5 +1,5 @@
 name: Update README Screenshot
-description: Capture a screenshot of a site and commit the updated image reference in the root README.
+description: Capture a site as a PNG screenshot or animated GIF, write it to a repo-relative path, and update a marked README block.
 author: Mrchazaaa
 branding:
   icon: image
@@ -15,10 +15,6 @@ inputs:
     description: Marker name used for the README block, such as screenshot or hero.
     required: false
     default: screenshot
-  push:
-    description: Whether the action should create and push a commit. Set to false to only update files in the workspace.
-    required: false
-    default: "true"
   capture_format:
     description: Whether to capture a static PNG image or an animated GIF.
     required: false
@@ -58,32 +54,27 @@ inputs:
   browser_path:
     description: Optional explicit browser executable path.
     required: false
-  commit_message:
-    description: Commit message used when files changed.
+  commit_changes:
+    description: Whether to commit and push updates to the currently checked-out branch.
     required: false
-    default: "chore: update README screenshot"
-  git_user_name:
-    description: Git author name for the generated commit.
+    default: "false"
+  commit_message:
+    description: Commit message used when commit_changes is true.
+    required: false
+    default: docs: update screenshots
+  commit_author_name:
+    description: Commit author name used when commit_changes is true.
     required: false
     default: github-actions[bot]
-  git_user_email:
-    description: Git author email for the generated commit.
+  commit_author_email:
+    description: Commit author email used when commit_changes is true.
     required: false
     default: 41898282+github-actions[bot]@users.noreply.github.com
-  target_branch:
-    description: Optional branch to push the generated commit to instead of the currently checked out branch.
-    required: false
-  token:
-    description: GitHub token with contents:write permission.
-    required: false
-    default: ${{ github.token }}
 outputs:
-  changed:
-    description: Whether the screenshot or README content changed.
-  commit_sha:
-    description: SHA of the created commit, or empty when unchanged.
   image_path:
     description: Repo-relative asset path written by the action.
+  committed:
+    description: Whether the action created and pushed a commit.
 runs:
   using: node20
   main: dist/index.js
