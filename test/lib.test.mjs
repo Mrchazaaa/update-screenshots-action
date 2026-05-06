@@ -5,6 +5,7 @@ import os from "node:os";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import {
   buildReadmeImageBlock,
+  retry,
   replaceMarkedScreenshotBlock,
   resolveWorkspacePath,
   updateReadme
@@ -55,4 +56,46 @@ test("updateReadme reports false when content already matches", async () => {
 
   assert.equal(changed, false);
   assert.equal(finalContent, content);
+});
+
+test("retry succeeds after transient failures", async () => {
+  let attempts = 0;
+  const retriedAttempts = [];
+
+  const result = await retry(
+    async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        throw new Error(`fail ${attempts}`);
+      }
+
+      return "ok";
+    },
+    {
+      retries: 2,
+      delayMs: 0,
+      onRetry: (attemptNumber) => {
+        retriedAttempts.push(attemptNumber);
+      }
+    }
+  );
+
+  assert.equal(result, "ok");
+  assert.equal(attempts, 3);
+  assert.deepEqual(retriedAttempts, [1, 2]);
+});
+
+test("retry rethrows after exhausting retries", async () => {
+  await assert.rejects(
+    retry(
+      async () => {
+        throw new Error("still failing");
+      },
+      {
+        retries: 1,
+        delayMs: 0
+      }
+    ),
+    /still failing/
+  );
 });

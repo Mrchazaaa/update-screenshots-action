@@ -17,12 +17,20 @@ export type ActionOptions = {
   viewportWidth: number;
   viewportHeight: number;
   waitUntil: WaitUntil;
+  navigationRetries: number;
+  navigationRetryDelayMs: number;
   delayMs: number;
   browserPath?: string;
   commitMessage: string;
   gitUserName: string;
   gitUserEmail: string;
   token?: string;
+};
+
+export type RetryOptions = {
+  retries: number;
+  delayMs: number;
+  onRetry?: (attemptNumber: number, error: unknown) => void;
 };
 
 export function validateUrl(input: string): URL {
@@ -133,6 +141,33 @@ export async function findBrowserExecutable(explicitPath?: string): Promise<stri
   throw new Error(
     "Could not find a Chrome or Chromium executable. Set the browser_path input if your runner uses a custom location."
   );
+}
+
+export async function sleep(delayMs: number): Promise<void> {
+  if (delayMs <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+export async function retry<T>(operation: () => Promise<T>, options: RetryOptions): Promise<T> {
+  let attemptNumber = 0;
+
+  while (true) {
+    attemptNumber += 1;
+
+    try {
+      return await operation();
+    } catch (error) {
+      if (attemptNumber > options.retries) {
+        throw error;
+      }
+
+      options.onRetry?.(attemptNumber, error);
+      await sleep(options.delayMs);
+    }
+  }
 }
 
 function escapeRegExp(value: string): string {

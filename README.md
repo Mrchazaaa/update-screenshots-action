@@ -46,6 +46,8 @@ jobs:
         with:
           url: https://example.com
           image_path: assets/screenshots/home.png
+          navigation_retries: 5
+          navigation_retry_delay_ms: 1000
 ```
 
 ## Inputs
@@ -58,6 +60,8 @@ jobs:
 | `viewport_width` | No | `1440` | Browser viewport width |
 | `viewport_height` | No | `900` | Browser viewport height |
 | `wait_until` | No | `networkidle` | Playwright navigation wait mode |
+| `navigation_retries` | No | `0` | Number of times to retry navigation after the first failure |
+| `navigation_retry_delay_ms` | No | `1000` | Delay between navigation retry attempts |
 | `delay_ms` | No | `0` | Extra wait after navigation |
 | `browser_path` | No |  | Explicit browser executable path |
 | `commit_message` | No | `chore: update README screenshot` | Commit message |
@@ -78,6 +82,7 @@ jobs:
 - The action fails if the README markers are missing.
 - By default it looks for Chrome or Chromium in common GitHub-hosted runner locations.
 - The caller workflow must grant `contents: write`.
+- `navigation_retries` and `navigation_retry_delay_ms` are useful when the target URL is a local preview server that may not be ready on the first request.
 
 ## Development
 

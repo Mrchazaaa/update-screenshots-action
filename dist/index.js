@@ -20,6 +20,8 @@ exports.replaceMarkedScreenshotBlock = replaceMarkedScreenshotBlock;
 exports.updateReadme = updateReadme;
 exports.ensureParentDirectory = ensureParentDirectory;
 exports.findBrowserExecutable = findBrowserExecutable;
+exports.sleep = sleep;
+exports.retry = retry;
 const promises_1 = __nccwpck_require__(1455);
 const node_path_1 = __importDefault(__nccwpck_require__(6760));
 const node_fs_1 = __nccwpck_require__(3024);
@@ -110,6 +112,28 @@ async function findBrowserExecutable(explicitPath) {
     }
     throw new Error("Could not find a Chrome or Chromium executable. Set the browser_path input if your runner uses a custom location.");
 }
+async function sleep(delayMs) {
+    if (delayMs <= 0) {
+        return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+async function retry(operation, options) {
+    let attemptNumber = 0;
+    while (true) {
+        attemptNumber += 1;
+        try {
+            return await operation();
+        }
+        catch (error) {
+            if (attemptNumber > options.retries) {
+                throw error;
+            }
+            options.onRetry?.(attemptNumber, error);
+            await sleep(options.delayMs);
+        }
+    }
+}
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -178,6 +202,8 @@ async function run() {
         const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
         const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
         const waitUntil = (0, lib_1.parseWaitUntil)(core.getInput("wait_until") || "networkidle");
+        const navigationRetries = (0, lib_1.parseInteger)("navigation_retries", core.getInput("navigation_retries") || "0");
+        const navigationRetryDelayMs = (0, lib_1.parseInteger)("navigation_retry_delay_ms", core.getInput("navigation_retry_delay_ms") || "1000");
         const delayMs = (0, lib_1.parseInteger)("delay_ms", core.getInput("delay_ms") || "0");
         const browserPathInput = core.getInput("browser_path") || undefined;
         const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
@@ -195,6 +221,8 @@ async function run() {
             viewportWidth,
             viewportHeight,
             waitUntil,
+            navigationRetries,
+            navigationRetryDelayMs,
             delayMs
         });
         const readmeChanged = await (0, lib_1.updateReadme)(readmeAbsolutePath, imagePath);
@@ -237,7 +265,16 @@ async function captureScreenshot(options) {
                 height: options.viewportHeight
             }
         });
-        await page.goto(options.url, { waitUntil: options.waitUntil });
+        await (0, lib_1.retry)(async () => {
+            await page.goto(options.url, { waitUntil: options.waitUntil });
+        }, {
+            retries: options.navigationRetries,
+            delayMs: options.navigationRetryDelayMs,
+            onRetry: (attemptNumber, error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                core.warning(`Navigation attempt ${attemptNumber} failed for ${options.url}: ${message}. Retrying in ${options.navigationRetryDelayMs}ms.`);
+            }
+        });
         if (options.delayMs > 0) {
             await page.waitForTimeout(options.delayMs);
         }

@@ -8,6 +8,7 @@ import {
   findBrowserExecutable,
   parseInteger,
   parseWaitUntil,
+  retry,
   resolveWorkspacePath,
   updateReadme,
   validateUrl
@@ -28,6 +29,11 @@ async function run(): Promise<void> {
     const viewportWidth = parseInteger("viewport_width", core.getInput("viewport_width") || "1440");
     const viewportHeight = parseInteger("viewport_height", core.getInput("viewport_height") || "900");
     const waitUntil = parseWaitUntil(core.getInput("wait_until") || "networkidle");
+    const navigationRetries = parseInteger("navigation_retries", core.getInput("navigation_retries") || "0");
+    const navigationRetryDelayMs = parseInteger(
+      "navigation_retry_delay_ms",
+      core.getInput("navigation_retry_delay_ms") || "1000"
+    );
     const delayMs = parseInteger("delay_ms", core.getInput("delay_ms") || "0");
     const browserPathInput = core.getInput("browser_path") || undefined;
     const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
@@ -48,6 +54,8 @@ async function run(): Promise<void> {
       viewportWidth,
       viewportHeight,
       waitUntil,
+      navigationRetries,
+      navigationRetryDelayMs,
       delayMs
     });
 
@@ -90,6 +98,8 @@ type CaptureOptions = {
   viewportWidth: number;
   viewportHeight: number;
   waitUntil: "load" | "domcontentloaded" | "networkidle" | "commit";
+  navigationRetries: number;
+  navigationRetryDelayMs: number;
   delayMs: number;
 };
 
@@ -108,7 +118,22 @@ async function captureScreenshot(options: CaptureOptions): Promise<void> {
       }
     });
 
-    await page.goto(options.url, { waitUntil: options.waitUntil });
+    await retry(
+      async () => {
+        await page.goto(options.url, { waitUntil: options.waitUntil });
+      },
+      {
+        retries: options.navigationRetries,
+        delayMs: options.navigationRetryDelayMs,
+        onRetry: (attemptNumber, error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          core.warning(
+            `Navigation attempt ${attemptNumber} failed for ${options.url}: ${message}. Retrying in ${options.navigationRetryDelayMs}ms.`
+          );
+        }
+      }
+    );
+
     if (options.delayMs > 0) {
       await page.waitForTimeout(options.delayMs);
     }

@@ -27,6 +27,14 @@ inputs:
     description: Playwright waitUntil value for page navigation.
     required: false
     default: networkidle
+  navigation_retries:
+    description: Number of times to retry page navigation after the initial attempt fails.
+    required: false
+    default: "0"
+  navigation_retry_delay_ms:
+    description: Delay between navigation retry attempts in milliseconds.
+    required: false
+    default: "1000"
   delay_ms:
     description: Additional delay after navigation before taking the screenshot.
     required: false
