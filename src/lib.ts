@@ -1,31 +1,8 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { constants } from "node:fs";
-
-const DEFAULT_MARKER_NAME = "screenshot";
-
-const DEFAULT_ALT_TEXT = "Project screenshot";
 
 export type WaitUntil = "load" | "domcontentloaded" | "networkidle" | "commit";
 export type CaptureFormat = "image" | "gif";
-
-export type ActionOptions = {
-  workspace: string;
-  url: string;
-  imagePath: string;
-  readmePath: string;
-  viewportWidth: number;
-  viewportHeight: number;
-  waitUntil: WaitUntil;
-  navigationRetries: number;
-  navigationRetryDelayMs: number;
-  delayMs: number;
-  browserPath?: string;
-  commitMessage: string;
-  gitUserName: string;
-  gitUserEmail: string;
-  token?: string;
-};
 
 export type RetryOptions = {
   retries: number;
@@ -121,68 +98,8 @@ export function toPosixPath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-export function buildReadmeImageBlock(imagePath: string, markerName = DEFAULT_MARKER_NAME): string {
-  const posixPath = toPosixPath(imagePath);
-  return `${buildReadmeStartMarker(markerName)}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${buildReadmeEndMarker(markerName)}`;
-}
-
-export function replaceMarkedScreenshotBlock(readme: string, imagePath: string, markerName = DEFAULT_MARKER_NAME): string {
-  const startMarker = buildReadmeStartMarker(markerName);
-  const endMarker = buildReadmeEndMarker(markerName);
-  const blockPattern = new RegExp(
-    `${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`,
-    "m"
-  );
-
-  if (!blockPattern.test(readme)) {
-    throw new Error(`README is missing screenshot markers. Expected ${startMarker} and ${endMarker}.`);
-  }
-
-  return readme.replace(blockPattern, buildReadmeImageBlock(imagePath, markerName));
-}
-
-export async function updateReadme(readmeAbsolutePath: string, imagePath: string, markerName = DEFAULT_MARKER_NAME): Promise<boolean> {
-  const current = await readFile(readmeAbsolutePath, "utf8");
-  const next = replaceMarkedScreenshotBlock(current, imagePath, markerName);
-  if (current === next) {
-    return false;
-  }
-
-  await writeFile(readmeAbsolutePath, next, "utf8");
-  return true;
-}
-
 export async function ensureParentDirectory(filePath: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-}
-
-export async function findBrowserExecutable(explicitPath?: string): Promise<string> {
-  const candidates = explicitPath
-    ? [explicitPath]
-    : [
-        process.env.CHROME_BIN,
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium"
-      ];
-
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-
-  throw new Error(
-    "Could not find a Chrome or Chromium executable. Set the browser_path input if your runner uses a custom location."
-  );
 }
 
 export async function sleep(delayMs: number): Promise<void> {
@@ -210,16 +127,4 @@ export async function retry<T>(operation: () => Promise<T>, options: RetryOption
       await sleep(options.delayMs);
     }
   }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildReadmeStartMarker(markerName: string): string {
-  return `<!-- ${markerName}:start -->`;
-}
-
-function buildReadmeEndMarker(markerName: string): string {
-  return `<!-- ${markerName}:end -->`;
 }

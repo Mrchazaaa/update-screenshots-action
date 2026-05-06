@@ -6,7 +6,7 @@
   "scripts": {
     "clean": "rm -rf dist lib",
     "build:types": "tsc -p tsconfig.json",
-    "build:bundle": "ncc build lib/src/main.js -o dist",
+    "build:bundle": "ncc build lib/main.js -o dist",
     "build": "npm run clean && npm run build:types && npm run build:bundle",
     "test": "npm run build:types && node --test test/*.test.mjs"
   },

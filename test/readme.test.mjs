@@ -3,17 +3,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import os from "node:os";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import {
-  buildReadmeImageBlock,
-  parseBooleanInput,
-  parseCaptureFormat,
-  parseMarkerName,
-  retry,
-  replaceMarkedScreenshotBlock,
-  resolveWorkspacePath,
-  updateReadme,
-  validateAssetPathForFormat
-} from "../lib/src/lib.js";
+import { parseBooleanInput, parseCaptureFormat, parseMarkerName, resolveWorkspacePath, retry, validateAssetPathForFormat } from "../lib/lib.js";
+import { buildReadmeImageBlock, replaceMarkedScreenshotBlock, updateReadme } from "../lib/readme.js";
 
 test("replaceMarkedScreenshotBlock rewrites only the marked block", () => {
   const current = [

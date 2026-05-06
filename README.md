@@ -1,5 +1,8 @@
 # update-screenshots-action
 
+[![Tests](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/tests.yml/badge.svg)](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/tests.yml)
+[![Build](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/build.yml/badge.svg)](https://github.com/Mrchazaaa/update-screenshots-action/actions/workflows/build.yml)
+
 A publishable GitHub Action that captures a site as either a static PNG or an animated GIF, writes it to a repo-relative path, updates a marked block in the root `README.md`, then commits and pushes the change.
 
 ## What It Does

@@ -1,9 +1,7 @@
-name: CI
+name: Tests
 
 on:
   push:
-    branches:
-      - main
   pull_request:
 
 jobs:
@@ -19,5 +17,3 @@ jobs:
 
       - run: npm ci
       - run: npm test
-      - run: npm run build
-      - run: git diff --exit-code

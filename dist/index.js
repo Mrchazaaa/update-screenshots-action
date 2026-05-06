@@ -1,7 +1,410 @@
 /******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
-/***/ 3486:
+/***/ 4926:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.findBrowserExecutable = findBrowserExecutable;
+exports.captureAsset = captureAsset;
+const playwright_core_1 = __nccwpck_require__(657);
+const promises_1 = __nccwpck_require__(1455);
+const node_fs_1 = __nccwpck_require__(3024);
+const gif_encoder_2_1 = __importDefault(__nccwpck_require__(9364));
+const pngjs_1 = __nccwpck_require__(359);
+const lib_1 = __nccwpck_require__(1767);
+const DEFAULT_GIF_FPS = 10;
+async function findBrowserExecutable(explicitPath) {
+    const candidates = explicitPath
+        ? [explicitPath]
+        : [
+            process.env.CHROME_BIN,
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium"
+        ];
+    for (const candidate of candidates) {
+        if (!candidate) {
+            continue;
+        }
+        try {
+            await (0, promises_1.access)(candidate, node_fs_1.constants.X_OK);
+            return candidate;
+        }
+        catch {
+            continue;
+        }
+    }
+    throw new Error("Could not find a Chrome or Chromium executable. Set the browser_path input if your runner uses a custom location.");
+}
+async function captureAsset(options) {
+    const browser = await playwright_core_1.chromium.launch({
+        executablePath: options.browserExecutable,
+        headless: true,
+        args: ["--no-sandbox", "--disable-dev-shm-usage"]
+    });
+    try {
+        const page = await browser.newPage({
+            viewport: {
+                width: options.viewportWidth,
+                height: options.viewportHeight
+            }
+        });
+        await (0, lib_1.retry)(async () => {
+            await page.goto(options.url, { waitUntil: options.waitUntil });
+        }, {
+            retries: options.navigationRetries,
+            delayMs: options.navigationRetryDelayMs,
+            onRetry: options.onRetry
+        });
+        if (options.delayMs > 0) {
+            await page.waitForTimeout(options.delayMs);
+        }
+        if (options.captureFormat === "gif") {
+            await captureGif(page, options);
+            return;
+        }
+        await page.screenshot({ path: options.assetAbsolutePath, type: "png", fullPage: false });
+    }
+    finally {
+        await browser.close();
+    }
+}
+async function captureGif(page, options) {
+    const frameDelayMs = Math.max(1000 / DEFAULT_GIF_FPS, 20);
+    const frameCount = Math.max(1, Math.ceil(options.gifDurationMs / frameDelayMs));
+    const encoder = new gif_encoder_2_1.default(options.viewportWidth, options.viewportHeight, "neuquant", true, frameCount);
+    encoder.start();
+    encoder.setRepeat(0);
+    encoder.setDelay(frameDelayMs);
+    encoder.setQuality(10);
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        const screenshotBuffer = (await page.screenshot({ type: "png", fullPage: false }));
+        const png = pngjs_1.PNG.sync.read(screenshotBuffer);
+        encoder.addFrame(png.data);
+        if (frameIndex < frameCount - 1) {
+            await page.waitForTimeout(frameDelayMs);
+        }
+    }
+    encoder.finish();
+    await (0, promises_1.writeFile)(options.assetAbsolutePath, encoder.out.getData());
+}
+
+
+/***/ }),
+
+/***/ 6472:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseActionConfig = parseActionConfig;
+const core = __importStar(__nccwpck_require__(7484));
+const lib_1 = __nccwpck_require__(1767);
+function parseActionConfig() {
+    const workspace = process.env.GITHUB_WORKSPACE;
+    if (!workspace) {
+        throw new Error("GITHUB_WORKSPACE is not set.");
+    }
+    const url = (0, lib_1.validateUrl)(core.getInput("url", { required: true })).toString();
+    const assetPath = core.getInput("image_path", { required: true });
+    const readmePath = core.getInput("readme_path") || "README.md";
+    const markerName = (0, lib_1.parseMarkerName)(core.getInput("marker_name") || "screenshot");
+    const shouldPush = (0, lib_1.parseBooleanInput)("push", core.getInput("push") || "true");
+    const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
+    const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
+    const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
+    const waitUntil = (0, lib_1.parseWaitUntil)(core.getInput("wait_until") || "networkidle");
+    const navigationRetries = (0, lib_1.parseInteger)("navigation_retries", core.getInput("navigation_retries") || "0");
+    const navigationRetryDelayMs = (0, lib_1.parseInteger)("navigation_retry_delay_ms", core.getInput("navigation_retry_delay_ms") || "1000");
+    const delayMs = (0, lib_1.parseInteger)("delay_ms", core.getInput("delay_ms") || "0");
+    const gifDurationMs = (0, lib_1.parseInteger)("gif_duration_ms", core.getInput("gif_duration_ms") || "1000");
+    const browserPathInput = core.getInput("browser_path") || undefined;
+    const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
+    const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
+    const gitUserEmail = core.getInput("git_user_email") || "41898282+github-actions[bot]@users.noreply.github.com";
+    const targetBranchInput = core.getInput("target_branch").trim();
+    const token = core.getInput("token") || undefined;
+    (0, lib_1.validateAssetPathForFormat)(assetPath, captureFormat);
+    return {
+        workspace,
+        url,
+        assetPath,
+        assetAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, assetPath),
+        readmePath,
+        readmeAbsolutePath: (0, lib_1.resolveWorkspacePath)(workspace, readmePath),
+        markerName,
+        shouldPush,
+        captureFormat,
+        viewportWidth,
+        viewportHeight,
+        waitUntil,
+        navigationRetries,
+        navigationRetryDelayMs,
+        delayMs,
+        gifDurationMs,
+        browserPath: browserPathInput,
+        commitMessage,
+        gitUserName,
+        gitUserEmail,
+        targetBranch: targetBranchInput || undefined,
+        token
+    };
+}
+
+
+/***/ }),
+
+/***/ 9412:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.createGitClient = createGitClient;
+exports.configureGit = configureGit;
+exports.stageFiles = stageFiles;
+exports.hasTrackedChanges = hasTrackedChanges;
+exports.hasStagedChanges = hasStagedChanges;
+exports.commitAndPush = commitAndPush;
+exports.getCurrentBranchName = getCurrentBranchName;
+const node_child_process_1 = __nccwpck_require__(1421);
+const node_util_1 = __nccwpck_require__(7975);
+const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
+function createGitClient(workspace) {
+    return {
+        exec(args) {
+            return execFileAsync("git", args, {
+                cwd: workspace,
+                env: process.env
+            });
+        }
+    };
+}
+async function configureGit(client, name, email) {
+    await client.exec(["config", "user.name", name]);
+    await client.exec(["config", "user.email", email]);
+}
+async function stageFiles(client, pathsToStage) {
+    await client.exec(["add", "--", ...pathsToStage]);
+}
+async function hasTrackedChanges(client, pathsToCheck) {
+    const { stdout } = await client.exec(["status", "--porcelain", "--", ...pathsToCheck]);
+    return stdout.trim().length > 0;
+}
+async function hasStagedChanges(client) {
+    try {
+        await client.exec(["diff", "--cached", "--quiet"]);
+        return false;
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 1) {
+            return true;
+        }
+        throw error;
+    }
+}
+async function commitAndPush(client, options) {
+    await client.exec(["commit", "-m", options.commitMessage]);
+    const { stdout: shaStdout } = await client.exec(["rev-parse", "HEAD"]);
+    const commitSha = shaStdout.trim();
+    const currentBranch = await getCurrentBranchName(client);
+    const branch = options.targetBranch || currentBranch || options.fallbackBranch;
+    if (!branch) {
+        throw new Error("Could not determine the branch name for push.");
+    }
+    await withAuthenticatedRemote(client, options.token, async () => {
+        if (options.targetBranch && currentBranch !== options.targetBranch) {
+            await publishToTargetBranch(client, commitSha, options.targetBranch);
+            return;
+        }
+        await rebaseOntoRemoteBranch(client, branch);
+        await client.exec(["push", "origin", `HEAD:${branch}`]);
+    });
+    return commitSha;
+}
+async function getCurrentBranchName(client) {
+    const { stdout } = await client.exec(["rev-parse", "--abbrev-ref", "HEAD"]);
+    const branch = stdout.trim();
+    if (branch && branch !== "HEAD") {
+        return branch;
+    }
+    return undefined;
+}
+async function publishToTargetBranch(client, commitSha, targetBranch) {
+    const remoteBranchExists = await hasRemoteBranch(client, targetBranch);
+    if (!remoteBranchExists) {
+        await client.exec(["push", "origin", `${commitSha}:refs/heads/${targetBranch}`]);
+        return;
+    }
+    const restoreRef = await getRestoreRef(client);
+    const tempBranch = `update-screenshots-action/${Date.now()}`;
+    await client.exec(["fetch", "origin", targetBranch]);
+    try {
+        await client.exec(["checkout", "-B", tempBranch, "FETCH_HEAD"]);
+        await client.exec(["cherry-pick", "--strategy-option", "theirs", commitSha]);
+        await client.exec(["push", "origin", `HEAD:refs/heads/${targetBranch}`]);
+    }
+    catch (error) {
+        await abortCherryPickIfNeeded(client);
+        throw new Error(`Could not publish the generated commit onto origin/${targetBranch}. Resolve the branch conflict and rerun the workflow.`);
+    }
+    finally {
+        await restoreCheckout(client, restoreRef);
+        await deleteBranchIfPresent(client, tempBranch);
+    }
+}
+async function withAuthenticatedRemote(client, token, operation) {
+    if (!token) {
+        return operation();
+    }
+    const { stdout } = await client.exec(["remote", "get-url", "origin"]);
+    const remoteUrl = stdout.trim();
+    if (!remoteUrl.startsWith("https://")) {
+        return operation();
+    }
+    const authenticatedUrl = remoteUrl.replace("https://", `https://x-access-token:${token}@`);
+    await client.exec(["remote", "set-url", "origin", authenticatedUrl]);
+    try {
+        return await operation();
+    }
+    finally {
+        await client.exec(["remote", "set-url", "origin", remoteUrl]);
+    }
+}
+async function rebaseOntoRemoteBranch(client, branch) {
+    const remoteBranchExists = await hasRemoteBranch(client, branch);
+    if (!remoteBranchExists) {
+        return;
+    }
+    await client.exec(["fetch", "origin", branch]);
+    try {
+        await client.exec(["rebase", "FETCH_HEAD"]);
+    }
+    catch (error) {
+        await abortRebaseIfNeeded(client);
+        throw new Error(`Could not rebase the generated commit onto origin/${branch}. Resolve the branch conflict and rerun the workflow.`);
+    }
+}
+async function hasRemoteBranch(client, branch) {
+    try {
+        await client.exec(["ls-remote", "--exit-code", "--heads", "origin", branch]);
+        return true;
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 2) {
+            return false;
+        }
+        throw error;
+    }
+}
+async function abortRebaseIfNeeded(client) {
+    try {
+        await client.exec(["rebase", "--abort"]);
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 128) {
+            return;
+        }
+        throw error;
+    }
+}
+async function abortCherryPickIfNeeded(client) {
+    try {
+        await client.exec(["cherry-pick", "--abort"]);
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 128) {
+            return;
+        }
+        throw error;
+    }
+}
+async function getRestoreRef(client) {
+    const branch = await getCurrentBranchName(client);
+    if (branch) {
+        return branch;
+    }
+    const { stdout } = await client.exec(["rev-parse", "HEAD"]);
+    return stdout.trim();
+}
+async function restoreCheckout(client, restoreRef) {
+    const currentBranch = await getCurrentBranchName(client);
+    if (currentBranch === restoreRef) {
+        return;
+    }
+    await client.exec(["checkout", restoreRef]);
+}
+async function deleteBranchIfPresent(client, branch) {
+    try {
+        await client.exec(["branch", "-D", branch]);
+    }
+    catch (error) {
+        const exitCode = getExitCode(error);
+        if (exitCode === 1 || exitCode === 128) {
+            return;
+        }
+        throw error;
+    }
+}
+function getExitCode(error) {
+    if (typeof error === "object" && error !== null && "code" in error) {
+        const code = error.code;
+        if (typeof code === "number") {
+            return code;
+        }
+    }
+    return undefined;
+}
+
+
+/***/ }),
+
+/***/ 1767:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -19,18 +422,11 @@ exports.parseMarkerName = parseMarkerName;
 exports.validateAssetPathForFormat = validateAssetPathForFormat;
 exports.resolveWorkspacePath = resolveWorkspacePath;
 exports.toPosixPath = toPosixPath;
-exports.buildReadmeImageBlock = buildReadmeImageBlock;
-exports.replaceMarkedScreenshotBlock = replaceMarkedScreenshotBlock;
-exports.updateReadme = updateReadme;
 exports.ensureParentDirectory = ensureParentDirectory;
-exports.findBrowserExecutable = findBrowserExecutable;
 exports.sleep = sleep;
 exports.retry = retry;
 const promises_1 = __nccwpck_require__(1455);
 const node_path_1 = __importDefault(__nccwpck_require__(6760));
-const node_fs_1 = __nccwpck_require__(3024);
-const DEFAULT_MARKER_NAME = "screenshot";
-const DEFAULT_ALT_TEXT = "Project screenshot";
 function validateUrl(input) {
     try {
         return new URL(input);
@@ -100,54 +496,8 @@ function resolveWorkspacePath(workspace, repoRelativePath) {
 function toPosixPath(value) {
     return value.split(node_path_1.default.sep).join("/");
 }
-function buildReadmeImageBlock(imagePath, markerName = DEFAULT_MARKER_NAME) {
-    const posixPath = toPosixPath(imagePath);
-    return `${buildReadmeStartMarker(markerName)}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${buildReadmeEndMarker(markerName)}`;
-}
-function replaceMarkedScreenshotBlock(readme, imagePath, markerName = DEFAULT_MARKER_NAME) {
-    const startMarker = buildReadmeStartMarker(markerName);
-    const endMarker = buildReadmeEndMarker(markerName);
-    const blockPattern = new RegExp(`${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`, "m");
-    if (!blockPattern.test(readme)) {
-        throw new Error(`README is missing screenshot markers. Expected ${startMarker} and ${endMarker}.`);
-    }
-    return readme.replace(blockPattern, buildReadmeImageBlock(imagePath, markerName));
-}
-async function updateReadme(readmeAbsolutePath, imagePath, markerName = DEFAULT_MARKER_NAME) {
-    const current = await (0, promises_1.readFile)(readmeAbsolutePath, "utf8");
-    const next = replaceMarkedScreenshotBlock(current, imagePath, markerName);
-    if (current === next) {
-        return false;
-    }
-    await (0, promises_1.writeFile)(readmeAbsolutePath, next, "utf8");
-    return true;
-}
 async function ensureParentDirectory(filePath) {
     await (0, promises_1.mkdir)(node_path_1.default.dirname(filePath), { recursive: true });
-}
-async function findBrowserExecutable(explicitPath) {
-    const candidates = explicitPath
-        ? [explicitPath]
-        : [
-            process.env.CHROME_BIN,
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/chromium"
-        ];
-    for (const candidate of candidates) {
-        if (!candidate) {
-            continue;
-        }
-        try {
-            await (0, promises_1.access)(candidate, node_fs_1.constants.X_OK);
-            return candidate;
-        }
-        catch {
-            continue;
-        }
-    }
-    throw new Error("Could not find a Chrome or Chromium executable. Set the browser_path input if your runner uses a custom location.");
 }
 async function sleep(delayMs) {
     if (delayMs <= 0) {
@@ -171,20 +521,11 @@ async function retry(operation, options) {
         }
     }
 }
-function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function buildReadmeStartMarker(markerName) {
-    return `<!-- ${markerName}:start -->`;
-}
-function buildReadmeEndMarker(markerName) {
-    return `<!-- ${markerName}:end -->`;
-}
 
 
 /***/ }),
 
-/***/ 9396:
+/***/ 5915:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
 "use strict";
@@ -222,91 +563,67 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __importStar(__nccwpck_require__(7484));
-const playwright_core_1 = __nccwpck_require__(657);
-const node_child_process_1 = __nccwpck_require__(1421);
-const promises_1 = __nccwpck_require__(1455);
-const node_util_1 = __nccwpck_require__(7975);
-const node_path_1 = __importDefault(__nccwpck_require__(6760));
-const gif_encoder_2_1 = __importDefault(__nccwpck_require__(9364));
-const pngjs_1 = __nccwpck_require__(359);
-const lib_1 = __nccwpck_require__(3486);
-const execFileAsync = (0, node_util_1.promisify)(node_child_process_1.execFile);
-const DEFAULT_GIF_FPS = 10;
+const capture_1 = __nccwpck_require__(4926);
+const config_1 = __nccwpck_require__(6472);
+const git_1 = __nccwpck_require__(9412);
+const lib_1 = __nccwpck_require__(1767);
+const readme_1 = __nccwpck_require__(9256);
 async function run() {
     try {
-        const workspace = process.env.GITHUB_WORKSPACE;
-        if (!workspace) {
-            throw new Error("GITHUB_WORKSPACE is not set.");
-        }
-        const url = (0, lib_1.validateUrl)(core.getInput("url", { required: true })).toString();
-        const assetPath = core.getInput("image_path", { required: true });
-        const readmePath = core.getInput("readme_path") || "README.md";
-        const markerName = (0, lib_1.parseMarkerName)(core.getInput("marker_name") || "screenshot");
-        const shouldPush = (0, lib_1.parseBooleanInput)("push", core.getInput("push") || "true");
-        const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
-        const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
-        const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
-        const waitUntil = (0, lib_1.parseWaitUntil)(core.getInput("wait_until") || "networkidle");
-        const navigationRetries = (0, lib_1.parseInteger)("navigation_retries", core.getInput("navigation_retries") || "0");
-        const navigationRetryDelayMs = (0, lib_1.parseInteger)("navigation_retry_delay_ms", core.getInput("navigation_retry_delay_ms") || "1000");
-        const delayMs = (0, lib_1.parseInteger)("delay_ms", core.getInput("delay_ms") || "0");
-        const gifDurationMs = (0, lib_1.parseInteger)("gif_duration_ms", core.getInput("gif_duration_ms") || "1000");
-        const browserPathInput = core.getInput("browser_path") || undefined;
-        const commitMessage = core.getInput("commit_message") || "chore: update README screenshot";
-        const gitUserName = core.getInput("git_user_name") || "github-actions[bot]";
-        const gitUserEmail = core.getInput("git_user_email") || "41898282+github-actions[bot]@users.noreply.github.com";
-        const targetBranchInput = core.getInput("target_branch").trim();
-        const targetBranch = targetBranchInput || undefined;
-        const token = core.getInput("token") || undefined;
-        (0, lib_1.validateAssetPathForFormat)(assetPath, captureFormat);
-        const assetAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, assetPath);
-        const readmeAbsolutePath = (0, lib_1.resolveWorkspacePath)(workspace, readmePath);
-        const browserExecutable = await (0, lib_1.findBrowserExecutable)(browserPathInput);
-        await (0, lib_1.ensureParentDirectory)(assetAbsolutePath);
-        await captureAsset({
+        const config = (0, config_1.parseActionConfig)();
+        const git = (0, git_1.createGitClient)(config.workspace);
+        const browserExecutable = await (0, capture_1.findBrowserExecutable)(config.browserPath);
+        await (0, lib_1.ensureParentDirectory)(config.assetAbsolutePath);
+        await (0, capture_1.captureAsset)({
             browserExecutable,
-            url,
-            assetAbsolutePath,
-            captureFormat,
-            viewportWidth,
-            viewportHeight,
-            waitUntil,
-            navigationRetries,
-            navigationRetryDelayMs,
-            delayMs,
-            gifDurationMs
+            url: config.url,
+            assetAbsolutePath: config.assetAbsolutePath,
+            captureFormat: config.captureFormat,
+            viewportWidth: config.viewportWidth,
+            viewportHeight: config.viewportHeight,
+            waitUntil: config.waitUntil,
+            navigationRetries: config.navigationRetries,
+            navigationRetryDelayMs: config.navigationRetryDelayMs,
+            delayMs: config.delayMs,
+            gifDurationMs: config.gifDurationMs,
+            onRetry: (attemptNumber, error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                core.warning(`Navigation attempt ${attemptNumber} failed for ${config.url}: ${message}. Retrying in ${config.navigationRetryDelayMs}ms.`);
+            }
         });
-        const readmeChanged = await (0, lib_1.updateReadme)(readmeAbsolutePath, assetPath, markerName);
-        const assetChanged = await hasTrackedChanges(workspace, [assetPath]);
+        const readmeChanged = await (0, readme_1.updateReadme)(config.readmeAbsolutePath, config.assetPath, config.markerName);
+        const assetChanged = await (0, git_1.hasTrackedChanges)(git, [config.assetPath]);
         const changed = readmeChanged || assetChanged;
-        core.setOutput("image_path", node_path_1.default.normalize(assetPath));
+        core.setOutput("image_path", (0, lib_1.toPosixPath)(config.assetPath));
         if (!changed) {
             core.info("README and captured asset are already up to date.");
             core.setOutput("changed", "false");
             core.setOutput("commit_sha", "");
             return;
         }
-        if (!shouldPush) {
+        if (!config.shouldPush) {
             core.info("Files were updated without creating a commit because push is false.");
             core.setOutput("changed", "true");
             core.setOutput("commit_sha", "");
             return;
         }
-        await configureGit(workspace, gitUserName, gitUserEmail);
-        await stageFiles(workspace, [assetPath, readmePath]);
-        const stagedDiff = await hasStagedChanges(workspace);
+        await (0, git_1.configureGit)(git, config.gitUserName, config.gitUserEmail);
+        await (0, git_1.stageFiles)(git, [config.assetPath, config.readmePath]);
+        const stagedDiff = await (0, git_1.hasStagedChanges)(git);
         if (!stagedDiff) {
             core.info("File rewrites produced no staged diff.");
             core.setOutput("changed", "false");
             core.setOutput("commit_sha", "");
             return;
         }
-        const commitSha = await commitAndPush(workspace, commitMessage, token, targetBranch);
+        const commitSha = await (0, git_1.commitAndPush)(git, {
+            commitMessage: config.commitMessage,
+            token: config.token,
+            targetBranch: config.targetBranch,
+            fallbackBranch: process.env.GITHUB_REF_NAME
+        });
         core.setOutput("changed", "true");
         core.setOutput("commit_sha", commitSha);
     }
@@ -314,173 +631,55 @@ async function run() {
         core.setFailed(error instanceof Error ? error.message : String(error));
     }
 }
-async function captureAsset(options) {
-    const browser = await playwright_core_1.chromium.launch({
-        executablePath: options.browserExecutable,
-        headless: true,
-        args: ["--no-sandbox", "--disable-dev-shm-usage"]
-    });
-    try {
-        const page = await browser.newPage({
-            viewport: {
-                width: options.viewportWidth,
-                height: options.viewportHeight
-            }
-        });
-        await (0, lib_1.retry)(async () => {
-            await page.goto(options.url, { waitUntil: options.waitUntil });
-        }, {
-            retries: options.navigationRetries,
-            delayMs: options.navigationRetryDelayMs,
-            onRetry: (attemptNumber, error) => {
-                const message = error instanceof Error ? error.message : String(error);
-                core.warning(`Navigation attempt ${attemptNumber} failed for ${options.url}: ${message}. Retrying in ${options.navigationRetryDelayMs}ms.`);
-            }
-        });
-        if (options.delayMs > 0) {
-            await page.waitForTimeout(options.delayMs);
-        }
-        if (options.captureFormat === "gif") {
-            await captureGif(page, options);
-            return;
-        }
-        await page.screenshot({ path: options.assetAbsolutePath, type: "png", fullPage: false });
+void run();
+
+
+/***/ }),
+
+/***/ 9256:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildReadmeImageBlock = buildReadmeImageBlock;
+exports.replaceMarkedScreenshotBlock = replaceMarkedScreenshotBlock;
+exports.updateReadme = updateReadme;
+const promises_1 = __nccwpck_require__(1455);
+const lib_1 = __nccwpck_require__(1767);
+const DEFAULT_MARKER_NAME = "screenshot";
+const DEFAULT_ALT_TEXT = "Project screenshot";
+function buildReadmeImageBlock(imagePath, markerName = DEFAULT_MARKER_NAME) {
+    const posixPath = (0, lib_1.toPosixPath)(imagePath);
+    return `${buildReadmeStartMarker(markerName)}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${buildReadmeEndMarker(markerName)}`;
+}
+function replaceMarkedScreenshotBlock(readme, imagePath, markerName = DEFAULT_MARKER_NAME) {
+    const startMarker = buildReadmeStartMarker(markerName);
+    const endMarker = buildReadmeEndMarker(markerName);
+    const blockPattern = new RegExp(`${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`, "m");
+    if (!blockPattern.test(readme)) {
+        throw new Error(`README is missing screenshot markers. Expected ${startMarker} and ${endMarker}.`);
     }
-    finally {
-        await browser.close();
-    }
+    return readme.replace(blockPattern, buildReadmeImageBlock(imagePath, markerName));
 }
-async function captureGif(page, options) {
-    const frameDelayMs = Math.max(1000 / DEFAULT_GIF_FPS, 20);
-    const frameCount = Math.max(1, Math.ceil(options.gifDurationMs / frameDelayMs));
-    const encoder = new gif_encoder_2_1.default(options.viewportWidth, options.viewportHeight, "neuquant", true, frameCount);
-    encoder.start();
-    encoder.setRepeat(0);
-    encoder.setDelay(frameDelayMs);
-    encoder.setQuality(10);
-    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
-        const screenshotBuffer = (await page.screenshot({ type: "png", fullPage: false }));
-        const png = pngjs_1.PNG.sync.read(screenshotBuffer);
-        encoder.addFrame(png.data);
-        if (frameIndex < frameCount - 1) {
-            await page.waitForTimeout(frameDelayMs);
-        }
-    }
-    encoder.finish();
-    await (0, promises_1.writeFile)(options.assetAbsolutePath, encoder.out.getData());
-}
-async function configureGit(workspace, name, email) {
-    await execGit(workspace, ["config", "user.name", name]);
-    await execGit(workspace, ["config", "user.email", email]);
-}
-async function stageFiles(workspace, pathsToStage) {
-    await execGit(workspace, ["add", "--", ...pathsToStage]);
-}
-async function hasTrackedChanges(workspace, pathsToCheck) {
-    const { stdout } = await execGit(workspace, ["status", "--porcelain", "--", ...pathsToCheck]);
-    return stdout.trim().length > 0;
-}
-async function hasStagedChanges(workspace) {
-    try {
-        await execGit(workspace, ["diff", "--cached", "--quiet"]);
+async function updateReadme(readmeAbsolutePath, imagePath, markerName = DEFAULT_MARKER_NAME) {
+    const current = await (0, promises_1.readFile)(readmeAbsolutePath, "utf8");
+    const next = replaceMarkedScreenshotBlock(current, imagePath, markerName);
+    if (current === next) {
         return false;
     }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 1) {
-            return true;
-        }
-        throw error;
-    }
+    await (0, promises_1.writeFile)(readmeAbsolutePath, next, "utf8");
+    return true;
 }
-async function commitAndPush(workspace, commitMessage, token, targetBranch) {
-    await execGit(workspace, ["commit", "-m", commitMessage]);
-    const { stdout: shaStdout } = await execGit(workspace, ["rev-parse", "HEAD"]);
-    const commitSha = shaStdout.trim();
-    const branch = targetBranch || (await getBranchName(workspace));
-    if (token) {
-        await configureAuthenticatedRemote(workspace, token);
-    }
-    await rebaseOntoRemoteBranch(workspace, branch);
-    await execGit(workspace, ["push", "origin", `HEAD:${branch}`]);
-    return commitSha;
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-async function getBranchName(workspace) {
-    const { stdout } = await execGit(workspace, ["rev-parse", "--abbrev-ref", "HEAD"]);
-    const branch = stdout.trim();
-    if (branch && branch !== "HEAD") {
-        return branch;
-    }
-    const fallback = process.env.GITHUB_REF_NAME;
-    if (fallback) {
-        return fallback;
-    }
-    throw new Error("Could not determine the branch name for push.");
+function buildReadmeStartMarker(markerName) {
+    return `<!-- ${markerName}:start -->`;
 }
-async function configureAuthenticatedRemote(workspace, token) {
-    const { stdout } = await execGit(workspace, ["remote", "get-url", "origin"]);
-    const remoteUrl = stdout.trim();
-    if (!remoteUrl.startsWith("https://")) {
-        return;
-    }
-    const authenticatedUrl = remoteUrl.replace("https://", `https://x-access-token:${token}@`);
-    await execGit(workspace, ["remote", "set-url", "origin", authenticatedUrl]);
+function buildReadmeEndMarker(markerName) {
+    return `<!-- ${markerName}:end -->`;
 }
-async function rebaseOntoRemoteBranch(workspace, branch) {
-    const remoteBranchExists = await hasRemoteBranch(workspace, branch);
-    if (!remoteBranchExists) {
-        return;
-    }
-    await execGit(workspace, ["fetch", "origin", branch]);
-    try {
-        await execGit(workspace, ["rebase", "FETCH_HEAD"]);
-    }
-    catch (error) {
-        await abortRebaseIfNeeded(workspace);
-        throw new Error(`Could not rebase the generated commit onto origin/${branch}. Resolve the branch conflict and rerun the workflow.`);
-    }
-}
-async function hasRemoteBranch(workspace, branch) {
-    try {
-        await execGit(workspace, ["ls-remote", "--exit-code", "--heads", "origin", branch]);
-        return true;
-    }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 2) {
-            return false;
-        }
-        throw error;
-    }
-}
-async function abortRebaseIfNeeded(workspace) {
-    try {
-        await execGit(workspace, ["rebase", "--abort"]);
-    }
-    catch (error) {
-        const exitCode = getExitCode(error);
-        if (exitCode === 128) {
-            return;
-        }
-        throw error;
-    }
-}
-async function execGit(workspace, args) {
-    return execFileAsync("git", args, {
-        cwd: workspace,
-        env: process.env
-    });
-}
-function getExitCode(error) {
-    if (typeof error === "object" && error !== null && "code" in error) {
-        const code = error.code;
-        if (typeof code === "number") {
-            return code;
-        }
-    }
-    return undefined;
-}
-void run();
 
 
 /***/ }),
@@ -92579,7 +92778,7 @@ module.exports = {"rE":"1.59.1"};
 /******/ 	// startup
 /******/ 	// Load entry module and return exports
 /******/ 	// This entry module is referenced by other modules so it can't be inlined
-/******/ 	var __webpack_exports__ = __nccwpck_require__(9396);
+/******/ 	var __webpack_exports__ = __nccwpck_require__(5915);
 /******/ 	module.exports = __webpack_exports__;
 /******/ 	
 /******/ })()
