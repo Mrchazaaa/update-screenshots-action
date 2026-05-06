@@ -37,7 +37,7 @@ inputs:
   commit_message:
     description: Commit message used when files changed.
     required: false
-    default: chore: update README screenshot
+    default: "chore: update README screenshot"
   git_user_name:
     description: Git author name for the generated commit.
     required: false
