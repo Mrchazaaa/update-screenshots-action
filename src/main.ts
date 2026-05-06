@@ -11,6 +11,7 @@ import {
   parseCaptureFormat,
   findBrowserExecutable,
   parseInteger,
+  parseMarkerName,
   parseWaitUntil,
   retry,
   resolveWorkspacePath,
@@ -32,6 +33,7 @@ async function run(): Promise<void> {
     const url = validateUrl(core.getInput("url", { required: true })).toString();
     const assetPath = core.getInput("image_path", { required: true });
     const readmePath = core.getInput("readme_path") || "README.md";
+    const markerName = parseMarkerName(core.getInput("marker_name") || "screenshot");
     const captureFormat = parseCaptureFormat(core.getInput("capture_format") || "image");
     const viewportWidth = parseInteger("viewport_width", core.getInput("viewport_width") || "1440");
     const viewportHeight = parseInteger("viewport_height", core.getInput("viewport_height") || "900");
@@ -73,7 +75,7 @@ async function run(): Promise<void> {
       gifDurationMs
     });
 
-    const readmeChanged = await updateReadme(readmeAbsolutePath, assetPath);
+    const readmeChanged = await updateReadme(readmeAbsolutePath, assetPath, markerName);
     const assetChanged = await hasTrackedChanges(workspace, [assetPath]);
     const changed = readmeChanged || assetChanged;
 

@@ -14,6 +14,7 @@ exports.validateUrl = validateUrl;
 exports.parseInteger = parseInteger;
 exports.parseWaitUntil = parseWaitUntil;
 exports.parseCaptureFormat = parseCaptureFormat;
+exports.parseMarkerName = parseMarkerName;
 exports.validateAssetPathForFormat = validateAssetPathForFormat;
 exports.resolveWorkspacePath = resolveWorkspacePath;
 exports.toPosixPath = toPosixPath;
@@ -27,8 +28,7 @@ exports.retry = retry;
 const promises_1 = __nccwpck_require__(1455);
 const node_path_1 = __importDefault(__nccwpck_require__(6760));
 const node_fs_1 = __nccwpck_require__(3024);
-const README_START_MARKER = "<!-- screenshot:start -->";
-const README_END_MARKER = "<!-- screenshot:end -->";
+const DEFAULT_MARKER_NAME = "screenshot";
 const DEFAULT_ALT_TEXT = "Project screenshot";
 function validateUrl(input) {
     try {
@@ -57,6 +57,16 @@ function parseCaptureFormat(value) {
     }
     throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
 }
+function parseMarkerName(value) {
+    const normalized = value.trim();
+    if (!normalized) {
+        throw new Error("marker_name must not be empty.");
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(normalized)) {
+        throw new Error(`marker_name may only contain letters, numbers, underscores, and hyphens. Received: ${value}`);
+    }
+    return normalized;
+}
 function validateAssetPathForFormat(assetPath, captureFormat) {
     const expectedExtension = captureFormat === "image" ? ".png" : ".gif";
     const actualExtension = node_path_1.default.extname(assetPath).toLowerCase();
@@ -80,20 +90,22 @@ function resolveWorkspacePath(workspace, repoRelativePath) {
 function toPosixPath(value) {
     return value.split(node_path_1.default.sep).join("/");
 }
-function buildReadmeImageBlock(imagePath) {
+function buildReadmeImageBlock(imagePath, markerName = DEFAULT_MARKER_NAME) {
     const posixPath = toPosixPath(imagePath);
-    return `${README_START_MARKER}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${README_END_MARKER}`;
+    return `${buildReadmeStartMarker(markerName)}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${buildReadmeEndMarker(markerName)}`;
 }
-function replaceMarkedScreenshotBlock(readme, imagePath) {
-    const blockPattern = new RegExp(`${escapeRegExp(README_START_MARKER)}[\\s\\S]*?${escapeRegExp(README_END_MARKER)}`, "m");
+function replaceMarkedScreenshotBlock(readme, imagePath, markerName = DEFAULT_MARKER_NAME) {
+    const startMarker = buildReadmeStartMarker(markerName);
+    const endMarker = buildReadmeEndMarker(markerName);
+    const blockPattern = new RegExp(`${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`, "m");
     if (!blockPattern.test(readme)) {
-        throw new Error(`README is missing screenshot markers. Expected ${README_START_MARKER} and ${README_END_MARKER}.`);
+        throw new Error(`README is missing screenshot markers. Expected ${startMarker} and ${endMarker}.`);
     }
-    return readme.replace(blockPattern, buildReadmeImageBlock(imagePath));
+    return readme.replace(blockPattern, buildReadmeImageBlock(imagePath, markerName));
 }
-async function updateReadme(readmeAbsolutePath, imagePath) {
+async function updateReadme(readmeAbsolutePath, imagePath, markerName = DEFAULT_MARKER_NAME) {
     const current = await (0, promises_1.readFile)(readmeAbsolutePath, "utf8");
-    const next = replaceMarkedScreenshotBlock(current, imagePath);
+    const next = replaceMarkedScreenshotBlock(current, imagePath, markerName);
     if (current === next) {
         return false;
     }
@@ -151,6 +163,12 @@ async function retry(operation, options) {
 }
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function buildReadmeStartMarker(markerName) {
+    return `<!-- ${markerName}:start -->`;
+}
+function buildReadmeEndMarker(markerName) {
+    return `<!-- ${markerName}:end -->`;
 }
 
 
@@ -218,6 +236,7 @@ async function run() {
         const url = (0, lib_1.validateUrl)(core.getInput("url", { required: true })).toString();
         const assetPath = core.getInput("image_path", { required: true });
         const readmePath = core.getInput("readme_path") || "README.md";
+        const markerName = (0, lib_1.parseMarkerName)(core.getInput("marker_name") || "screenshot");
         const captureFormat = (0, lib_1.parseCaptureFormat)(core.getInput("capture_format") || "image");
         const viewportWidth = (0, lib_1.parseInteger)("viewport_width", core.getInput("viewport_width") || "1440");
         const viewportHeight = (0, lib_1.parseInteger)("viewport_height", core.getInput("viewport_height") || "900");
@@ -251,7 +270,7 @@ async function run() {
             delayMs,
             gifDurationMs
         });
-        const readmeChanged = await (0, lib_1.updateReadme)(readmeAbsolutePath, assetPath);
+        const readmeChanged = await (0, lib_1.updateReadme)(readmeAbsolutePath, assetPath, markerName);
         const assetChanged = await hasTrackedChanges(workspace, [assetPath]);
         const changed = readmeChanged || assetChanged;
         core.setOutput("image_path", node_path_1.default.normalize(assetPath));

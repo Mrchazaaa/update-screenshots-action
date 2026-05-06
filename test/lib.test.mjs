@@ -6,6 +6,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import {
   buildReadmeImageBlock,
   parseCaptureFormat,
+  parseMarkerName,
   retry,
   replaceMarkedScreenshotBlock,
   resolveWorkspacePath,
@@ -38,6 +39,35 @@ test("replaceMarkedScreenshotBlock rewrites only the marked block", () => {
   );
 });
 
+test("replaceMarkedScreenshotBlock rewrites only the selected named block", () => {
+  const current = [
+    "# Example",
+    "",
+    "<!-- hero:start -->",
+    "![Old hero](hero-old.png)",
+    "<!-- hero:end -->",
+    "",
+    "<!-- dashboard:start -->",
+    "![Old dashboard](dashboard-old.png)",
+    "<!-- dashboard:end -->"
+  ].join("\n");
+
+  const next = replaceMarkedScreenshotBlock(current, "assets/screenshots/dashboard.png", "dashboard");
+
+  assert.equal(
+    next,
+    [
+      "# Example",
+      "",
+      "<!-- hero:start -->",
+      "![Old hero](hero-old.png)",
+      "<!-- hero:end -->",
+      "",
+      buildReadmeImageBlock("assets/screenshots/dashboard.png", "dashboard")
+    ].join("\n")
+  );
+});
+
 test("replaceMarkedScreenshotBlock fails when markers are missing", () => {
   assert.throws(() => replaceMarkedScreenshotBlock("# Example", "shot.png"), /missing screenshot markers/i);
 });
@@ -65,6 +95,17 @@ test("parseCaptureFormat rejects unsupported values", () => {
   assert.throws(() => parseCaptureFormat("both"), /capture_format must be one of image, gif/i);
 });
 
+test("parseMarkerName accepts supported values", () => {
+  assert.equal(parseMarkerName("screenshot"), "screenshot");
+  assert.equal(parseMarkerName("hero_banner"), "hero_banner");
+  assert.equal(parseMarkerName("dashboard-2"), "dashboard-2");
+});
+
+test("parseMarkerName rejects empty and unsupported values", () => {
+  assert.throws(() => parseMarkerName(""), /marker_name must not be empty/i);
+  assert.throws(() => parseMarkerName("hero banner"), /marker_name may only contain/i);
+});
+
 test("validateAssetPathForFormat enforces matching extensions", () => {
   assert.doesNotThrow(() => validateAssetPathForFormat("assets/screenshots/home.png", "image"));
   assert.doesNotThrow(() => validateAssetPathForFormat("assets/screenshots/home.gif", "gif"));
@@ -89,6 +130,30 @@ test("updateReadme reports false when content already matches", async () => {
 
   assert.equal(changed, false);
   assert.equal(finalContent, content);
+});
+
+test("updateReadme updates only the selected named block", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "update-screenshots-action-"));
+  const readmePath = path.join(tempDir, "README.md");
+  const content = [
+    buildReadmeImageBlock("assets/screenshots/hero.png", "hero"),
+    "",
+    buildReadmeImageBlock("assets/screenshots/dashboard.png", "dashboard")
+  ].join("\n");
+  await writeFile(readmePath, content, "utf8");
+
+  const changed = await updateReadme(readmePath, "assets/screenshots/dashboard-next.png", "dashboard");
+  const finalContent = await readFile(readmePath, "utf8");
+
+  assert.equal(changed, true);
+  assert.equal(
+    finalContent,
+    [
+      buildReadmeImageBlock("assets/screenshots/hero.png", "hero"),
+      "",
+      buildReadmeImageBlock("assets/screenshots/dashboard-next.png", "dashboard")
+    ].join("\n")
+  );
 });
 
 test("retry succeeds after transient failures", async () => {

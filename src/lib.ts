@@ -2,8 +2,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { constants } from "node:fs";
 
-const README_START_MARKER = "<!-- screenshot:start -->";
-const README_END_MARKER = "<!-- screenshot:end -->";
+const DEFAULT_MARKER_NAME = "screenshot";
 
 const DEFAULT_ALT_TEXT = "Project screenshot";
 
@@ -67,6 +66,19 @@ export function parseCaptureFormat(value: string): CaptureFormat {
   throw new Error(`capture_format must be one of image, gif. Received: ${value}`);
 }
 
+export function parseMarkerName(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error("marker_name must not be empty.");
+  }
+
+  if (!/^[A-Za-z0-9_-]+$/.test(normalized)) {
+    throw new Error(`marker_name may only contain letters, numbers, underscores, and hyphens. Received: ${value}`);
+  }
+
+  return normalized;
+}
+
 export function validateAssetPathForFormat(assetPath: string, captureFormat: CaptureFormat): void {
   const expectedExtension = captureFormat === "image" ? ".png" : ".gif";
   const actualExtension = path.extname(assetPath).toLowerCase();
@@ -97,29 +109,29 @@ export function toPosixPath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-export function buildReadmeImageBlock(imagePath: string): string {
+export function buildReadmeImageBlock(imagePath: string, markerName = DEFAULT_MARKER_NAME): string {
   const posixPath = toPosixPath(imagePath);
-  return `${README_START_MARKER}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${README_END_MARKER}`;
+  return `${buildReadmeStartMarker(markerName)}\n![${DEFAULT_ALT_TEXT}](${posixPath})\n${buildReadmeEndMarker(markerName)}`;
 }
 
-export function replaceMarkedScreenshotBlock(readme: string, imagePath: string): string {
+export function replaceMarkedScreenshotBlock(readme: string, imagePath: string, markerName = DEFAULT_MARKER_NAME): string {
+  const startMarker = buildReadmeStartMarker(markerName);
+  const endMarker = buildReadmeEndMarker(markerName);
   const blockPattern = new RegExp(
-    `${escapeRegExp(README_START_MARKER)}[\\s\\S]*?${escapeRegExp(README_END_MARKER)}`,
+    `${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}`,
     "m"
   );
 
   if (!blockPattern.test(readme)) {
-    throw new Error(
-      `README is missing screenshot markers. Expected ${README_START_MARKER} and ${README_END_MARKER}.`
-    );
+    throw new Error(`README is missing screenshot markers. Expected ${startMarker} and ${endMarker}.`);
   }
 
-  return readme.replace(blockPattern, buildReadmeImageBlock(imagePath));
+  return readme.replace(blockPattern, buildReadmeImageBlock(imagePath, markerName));
 }
 
-export async function updateReadme(readmeAbsolutePath: string, imagePath: string): Promise<boolean> {
+export async function updateReadme(readmeAbsolutePath: string, imagePath: string, markerName = DEFAULT_MARKER_NAME): Promise<boolean> {
   const current = await readFile(readmeAbsolutePath, "utf8");
-  const next = replaceMarkedScreenshotBlock(current, imagePath);
+  const next = replaceMarkedScreenshotBlock(current, imagePath, markerName);
   if (current === next) {
     return false;
   }
@@ -190,4 +202,12 @@ export async function retry<T>(operation: () => Promise<T>, options: RetryOption
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildReadmeStartMarker(markerName: string): string {
+  return `<!-- ${markerName}:start -->`;
+}
+
+function buildReadmeEndMarker(markerName: string): string {
+  return `<!-- ${markerName}:end -->`;
 }

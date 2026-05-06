@@ -23,6 +23,8 @@ The target README must contain this exact marker pair:
 
 Everything between those markers is replaced with a single Markdown image reference that points at the action's `image_path` input.
 
+To update multiple screenshots in the same Markdown file, run the action multiple times with different `marker_name` values and matching marker pairs such as `<!-- hero:start --> ... <!-- hero:end -->` and `<!-- dashboard:start --> ... <!-- dashboard:end -->`.
+
 ## Usage
 
 ```yaml
@@ -48,6 +50,7 @@ jobs:
         with:
           url: https://example.com
           image_path: assets/screenshots/home.png
+          marker_name: screenshot
           capture_format: image
           navigation_retries: 5
           navigation_retry_delay_ms: 1000
@@ -71,6 +74,7 @@ GIF capture example:
 | --- | --- | --- | --- |
 | `url` | Yes |  | URL to open and capture |
 | `image_path` | Yes |  | Repo-relative output path for the captured asset |
+| `marker_name` | No | `screenshot` | Marker name used to choose which `<!-- name:start -->` / `<!-- name:end -->` block to rewrite |
 | `capture_format` | No | `image` | Capture `image` for PNG output or `gif` for animated GIF output |
 | `readme_path` | No | `README.md` | Repo-relative README path |
 | `viewport_width` | No | `1440` | Browser viewport width |
@@ -98,6 +102,7 @@ GIF capture example:
 ## Notes
 
 - The action fails if the README markers are missing.
+- `marker_name` lets you run the action multiple times against the same Markdown file, as long as each target block uses a distinct marker name.
 - By default it looks for Chrome or Chromium in common GitHub-hosted runner locations.
 - The caller workflow must grant `contents: write`.
 - `capture_format` controls whether the action writes a `.png` or `.gif`, and `image_path` must use the matching extension.

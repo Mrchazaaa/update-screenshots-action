@@ -11,6 +11,10 @@ inputs:
   image_path:
     description: Repo-relative path where the captured asset should be written.
     required: true
+  marker_name:
+    description: Marker name used for the README block, such as screenshot or hero.
+    required: false
+    default: screenshot
   capture_format:
     description: Whether to capture a static PNG image or an animated GIF.
     required: false
